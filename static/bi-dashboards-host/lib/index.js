@@ -419,7 +419,6 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     const normUrl = (raw, defPort) => { let v = String(raw).trim().replace(/\/+$/, ''); if (!/^https?:\/\//i.test(v)) v = 'http://' + v; try { if (!new URL(v).port) v = v + ':' + defPort } catch (e) { return null } return v }
     if (args.dataApi !== undefined) { const v = normUrl(args.dataApi, 8600); if (!v) return { error: '数据服务地址格式无效' }; upd.dataApi = v }
     if (args.statusUrl !== undefined) { const v = normUrl(args.statusUrl, 8080); if (!v) return { error: '状态服务地址格式无效' }; upd.statusUrl = v }
-    else if (upd.dataApi) { try { const u = new URL(upd.dataApi); upd.statusUrl = u.protocol + '//' + u.hostname + ':8080' } catch (e) {} }
     if (!Object.keys(upd).length) return { error: '无变更' }
     await cfgReady
     Object.assign(CFG, upd)

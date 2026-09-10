@@ -543,6 +543,8 @@ function TableManagerSection(props) {
   const [feishuOpen, setFeishuOpen] = React.useState(false)
   const [curCfg, setCurCfg] = React.useState({ dataApi: '', statusUrl: '' })
   const [hostInput, setHostInput] = React.useState('')
+  const [advOpen, setAdvOpen] = React.useState(false)
+  const [statusInput, setStatusInput] = React.useState('')
   const [addrMsg, setAddrMsg] = React.useState('')
   const [addrOk, setAddrOk] = React.useState(null)
   const [localInfo, setLocalInfo] = React.useState(null)
@@ -582,8 +584,10 @@ function TableManagerSection(props) {
   const saveHost = function () {
     if (!hostInput.trim()) { setAddrOk(false); setAddrMsg('✗ 请先粘贴数据主机的地址'); return }
     setAddrMsg('保存中…')
-    biCall('bi.setConfig', { dataApi: hostInput.trim() }).then(function (r) {
-      if (r && r.ok) { setCurCfg({ dataApi: r.dataApi, statusUrl: r.statusUrl }); setHostInput(''); setAddrOk(null); setAddrMsg('已保存并生效：数据服务 ' + r.dataApi + '，状态服务已自动设为 ' + r.statusUrl); if (TIMER_TIMEOUT) TIMER_TIMEOUT(function () { setAddrMsg('') }, 5000) }
+    const payload = { dataApi: hostInput.trim() }
+    if (advOpen && statusInput.trim()) payload.statusUrl = statusInput.trim()
+    biCall('bi.setConfig', payload).then(function (r) {
+      if (r && r.ok) { setCurCfg({ dataApi: r.dataApi, statusUrl: r.statusUrl }); setHostInput(''); setAddrOk(null); setAddrMsg('已保存并生效：数据服务 ' + r.dataApi + (payload.statusUrl ? '，状态服务 ' + r.statusUrl : '')); if (TIMER_TIMEOUT) TIMER_TIMEOUT(function () { setAddrMsg('') }, 5000) }
       else { setAddrOk(false); setAddrMsg('✗ ' + ((r && r.error) || '保存失败')) }
     }).catch(function (e) { setAddrOk(false); setAddrMsg('✗ ' + String((e && e.message) || e)) })
   }
@@ -688,7 +692,12 @@ function TableManagerSection(props) {
         React.createElement('input', { type: 'text', value: hostInput, placeholder: '粘贴数据主机的地址，如 http://192.168.1.100:8600', onChange: function (e) { setHostInput(e.target.value) }, style: addrInputStyle }),
         React.createElement('button', { className: 'bi-btn', disabled: addrMsg === '保存中…', onClick: saveHost }, addrMsg === '保存中…' ? '保存中' : '保存并连接'),
         copyTip ? React.createElement('span', { style: { fontSize: '12px', color: '#4ade80' } }, '已复制：' + copyTip) : null),
-      React.createElement('div', { style: { marginTop: '6px', fontSize: '12px', color: '#9fb3d8' } }, '保存后状态服务会自动设为同一台主机的 8080 端口，无需单独填写')),
+      React.createElement('div', { style: { marginTop: '8px', fontSize: '12px' } },
+        React.createElement('button', { style: { background: 'none', border: 'none', color: '#9fb3d8', cursor: 'pointer', padding: '0', fontSize: '12px' }, onClick: function () { setAdvOpen(!advOpen); if (!statusInput && curCfg.statusUrl) setStatusInput(curCfg.statusUrl) } },
+          (advOpen ? '▾ ' : '▸ ') + '高级：状态服务地址（一般无需修改）'),
+        advOpen ? React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' } },
+          React.createElement('input', { type: 'text', value: statusInput, placeholder: 'http://192.168.1.100:8080', onChange: function (e) { setStatusInput(e.target.value) }, style: addrInputStyle }),
+          React.createElement('span', { style: { fontSize: '12px', color: '#9fb3d8' } }, '仅当状态服务与数据服务不在同一台主机、或端口不同（默认 8080）时才需要填写；随上方地址一起保存')) : null)),
     React.createElement('div', { className: 'bi-set-h2' }, '数据表访问开关'),
     React.createElement('table', { className: 'bi-set-table' },
       React.createElement('thead', null, React.createElement('tr', null,
