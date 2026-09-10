@@ -1,0 +1,18 @@
+# 运行时数据与产物（不入库）
+data-service/.venv/
+__pycache__/
+*.pyc
+web/status.json
+web/status_history.json
+web/.status.lock
+web/server.log
+data/
+node_modules/
+
+# 编辑备份与一次性安装包
+*.bak
+*.bak2
+*.exe
+
+# 本机部署归档产物
+config.json.migrated

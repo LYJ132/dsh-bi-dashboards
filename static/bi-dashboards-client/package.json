@@ -1,0 +1,24 @@
+{
+  "name": "bi-dashboards-client",
+  "description": "无人超市 AI BI 插件 — 全局静态 Client 半部（conversation.view「我的看板」+ dsh-ui 围栏渲染）",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "license": "MIT"
+}

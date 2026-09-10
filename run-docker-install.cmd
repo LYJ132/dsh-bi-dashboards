@@ -1,0 +1,3 @@
+@echo off
+echo 正在启动 Docker Desktop 安装...
+"C:\tmp\DockerDesktopComplete.exe"

@@ -1,0 +1,24 @@
+services:
+  data-service:
+    build: ./data-service
+    container_name: data-service
+    ports:
+      - "8600:8600"
+    environment:
+      - DB_HOST=biz-postgres
+      - DB_PORT=5432
+      - DB_NAME=unmanned_supermarket
+      - DB_USER=appuser
+      - DB_PASSWORD=ChangeMe_Strong_123
+      - DB_POOL_MIN_SIZE=2
+      - DB_POOL_MAX_SIZE=10
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://apihub.agnes-ai.com/v1}
+      - LLM_MODEL=${LLM_MODEL:-agnes-2.5-flash}
+    networks:
+      - unmanned-store_default
+    restart: unless-stopped
+
+networks:
+  unmanned-store_default:
+    external: true

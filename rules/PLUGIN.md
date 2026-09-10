@@ -1,0 +1,43 @@
+# PLUGIN.md —— 插件迭代经验记录
+
+> 本文件 = **插件经验账本 + 创造模式契约速查**（图表模式规范见 [CHART.md](./CHART.md)，迭代记忆见 [CHART-ITERATION.md](./CHART-ITERATION.md)）。
+> 记录规则：凡是**解决耗时较长的问题**，解决后立即在此追加一条（不等阈值）；条目累积过多时按内容重叠度判断执行一次整理（合并精简进本文件契约章节）。无计数脚本，靠格式与条目序号管理。
+
+## 条目格式
+
+`### E<序号>：<标题>`，正文四要素：**症状 / 根因 / 修复 / 验证**，末尾可附「教训」。
+
+## 条目
+
+### E1：保存/创建副本 TDZ 崩溃（2026-09-04）
+
+- **症状**：预览卡点「保存」后图表不进我的看板；「全部保存」显示成功但数据未写入
+- **根因**：host saveChartFromPreview/duplicateChart 中 `const id = ... + idx` 下一行以 `(` 开头且缺分号——ASI 失效两行并成一条语句，`idx(...)` 被当函数调用，参数对象 `id: id` 在自身初始化前求值 → ReferenceError，函数提前返回
+- **修复**：重构为显式语句（rec 对象 + if/else unshift/push）；「全部保存」改为如实统计成败
+- **验证**：单测真实链路（id 形如 -p0/-c）+ ASI 全 bundle 扫描零残留
+- **教训**：minified 风格 bundle 里 `const x = ...\n(...)` 是隐形地雷；「按钮显示成功」≠「写入成功」，保存链路验证必须落到 store 数据
+
+### E2：筛选下拉值稀少 + 部分图表不响应筛选（2026-09-05）
+
+- **症状**：时间字段下拉只有几个日期（实际 316 个）；应用时间筛选后只有表格/KPI 响应，柱/线/饼图不动
+- **根因**：三处独立缺陷叠加 —— ① host getFilterValues 只取表中任意 1000 行去重（无排序无 DISTINCT 下推，1000 行只覆盖 7 天）；② ChartCell 的 ECharts 渲染 effect 有 `el.childElementCount === 0` 守卫，每张 bar/line/pie 图在 DOM 节点生命周期内只渲染一次，之后 setChart 的新数据被静默跳过（表格/KPI 每次重建 DOM 所以正常），哪张图「碰巧」已渲染决定它是否响应；③ 介于条件只填一边时 value 含空串，8600 整查询 400，client `.catch(()=>{})` 静默吞错
+- **修复**：① getFilterValues 改 limit 200000 全列拉取后 JS 去重（与 renderChartDef 同模式）；② 渲染 effect 改 getInstanceByDom → setOption(opt, true)（notMerge），无实例才 init；③ FilterCard build() 介于单边时降级为 >= / <= 单边条件
+- **验证**：8600 直查证明 1000 行采样只得 7 个日期（全表 316）；单边 BETWEEN 复现 HTTP 400；GUI 实测筛选 order_date=2025-07-03 后日销售额趋势 314→1 点、KPI=969.5（=单日实付总额）；介于只填起始值应用后 KPI=450027.2（与 8600 离线参考值一致）
+- **教训**：「只渲染一次」类守卫会把首次渲染后的所有数据更新静默丢弃，数据到达（setChart）与渲染必须同生命周期；空 catch 让上游 400 完全不可见，筛选类交互失败必须可见
+
+### E3：安装脚本生成的 config.json 静默失效（2026-09-10）
+
+- **症状**：异机按 INSTALL.md 装完后 echarts 404、dataApi 落回 localhost；手工改包根 `config.json` 无效
+- **根因**：index.js 的 `PKG_DIR = new URL('.', import.meta.url)` 指向 **lib/**（import.meta.url 基于 lib/index.js），config.json 实际读取 `lib/config.json`，与安装脚本写入的**包根** config.json 错配；且 vendorFile/storeFile 默认值按 `lib/static/...` 拼接而文件在包根——三层路径全部错位，配置静默落回 localhost 默认值
+- **修复**：PKG_DIR 改 `new URL('../', ...)` 指向包根；config.json 的 vendorFile/storeFile/crawlConfigFile 支持相对路径（cfgReady 按包根解析、setConfig 落盘时转回相对）；安装脚本生成相对路径配置 + 旧 lib/config.json 自动迁移归档为 `config.json.migrated`；设置页新增「服务地址」卡片（枚举本机网卡 IP 供复制/填入、testConnection 探测、setConfig 热更新 CFG 免重启）
+- **验证**：node --check ×2、RPC 方法对齐（client 调用 ⊆ host biApi）、ASI 扫描零残留、curl 全链路（echarts 200 / getLocalAddresses 正确枚举与 isDataHost 判定 / testConnection 24 表 / setConfig 落盘保持相对路径）、迁移逻辑实测
+- **教训**：「bundle 即源码」的静态插件里，包内相对定位必须显式核对 import.meta.url 的实际解析位置；安装脚本与运行时读取路径要有一致性测试，配置写错位置比没有配置更难排查（表现为"改了没反应"）；配置文件里绝不应出现机器相关绝对路径，相对化是跨机即用的前提
+
+## 开发契约速查（创造模式必读，细节见 git 历史 0098511 版 DEVELOPMENT.md）
+
+1. **声明红线**：client package.json `dsh.client.inject` 必须为 `[]`；bundle `exports.inject` 只许 `['slots']`（timer 走 window、sessions 走 ctx.get、CSS 走 injectCss）
+2. **RPC 协议**：client `biCall('bi.x')` ↔ host `biApi['bi.x']` 前缀一致；bundle 内禁止 `host.call`（动态沙箱才有）
+3. **禁止同名动态插件**：cordis_define 会与静态注册工具重名冲突
+4. **验证三道门 + 1**：顶层定义清单核对 / stub React hooks 渲染模拟 / 方法对齐（client 调用 ⊆ host biApi）+ Playwright 真实浏览器回归
+5. **运行时差异**：CSS 类样式被全局压制（交互控件用内联样式）；SVG 表现属性不支持 CSS 变量；host 侧 fire-and-forget 子进程会消失（触发类走 :8080 通道）；asyncpg JSONB 读回 str 需 json.loads；web/ 状态服务器已迁 `bi-plugin/web/`（crawler 的 /opt/web 挂载指向此处）
+6. **部署**：编辑 `static/bi-dashboards-*/lib/*.js`（bundle 即源码）→ node --check → 三道门 → cp 到 node_modules → **重启 DSH 生效**（client 刷新即生效）；机器相关路径/地址（dataApi/statusUrl/vendorFile/storeFile/crawlConfigFile）统一在包目录 `config.json`（缺失自动生成默认值；本机 config 指向 bi-plugin 原路径），异机安装走 INSTALL.md + `static/scripts/install-to-dsh.sh`
