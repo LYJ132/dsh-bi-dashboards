@@ -526,8 +526,8 @@ function SyncRoundBtn(props) {
     onClick: props.onClick,
     style: {
       width: '22px', height: '22px', borderRadius: '50%', padding: '0',
-      border: '1px solid ' + (props.disabled ? '#2a2e3d' : 'var(--dsw-alias-border-l1,#2a2e3d)'),
-      background: 'transparent', color: 'var(--dsw-alias-label-secondary,#9fb3d8)',
+      border: '1px solid ' + (props.disabled ? '#2a2e3d' : (props.accent ? '#3d2f1f' : 'var(--dsw-alias-border-l1,#2a2e3d)')),
+      background: props.accent ? '#241c10' : 'transparent', color: props.accent || 'var(--dsw-alias-label-secondary,#9fb3d8)',
       cursor: props.disabled ? 'default' : 'pointer', fontSize: '12px', lineHeight: '1',
       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
       flex: 'none', marginLeft: '2px', fontFamily: 'inherit',
@@ -535,7 +535,7 @@ function SyncRoundBtn(props) {
       transition: 'border-color .15s, color .15s'
     },
     onMouseEnter: function (e) { if (!props.disabled) { e.currentTarget.style.borderColor = '#f97316'; e.currentTarget.style.color = '#f97316' } },
-    onMouseLeave: function (e) { if (!props.disabled) { e.currentTarget.style.borderColor = 'var(--dsw-alias-border-l1,#2a2e3d)'; e.currentTarget.style.color = 'var(--dsw-alias-label-secondary,#9fb3d8)' } }
+    onMouseLeave: function (e) { if (!props.disabled) { e.currentTarget.style.borderColor = props.accent ? '#3d2f1f' : 'var(--dsw-alias-border-l1,#2a2e3d)'; e.currentTarget.style.color = props.accent || 'var(--dsw-alias-label-secondary,#9fb3d8)' } }
   }, props.disabled ? '…' : '↻')
 }
 function TableManagerSection(props) {
@@ -652,8 +652,8 @@ function TableManagerSection(props) {
   const feishuDot = offline ? GRAY : (anyFail ? RED : GREEN)
   let tableArea = null
   if (err) tableArea = React.createElement('div', { className: 'bi-err' }, '加载失败: ' + err)
-  else if (!data) tableArea = React.createElement('div', { className: 'bi-empty' }, '加载中')
-  else if (data.unreachable) tableArea = React.createElement('div', { className: 'bi-set-note', style: { padding: '10px 2px' } }, '数据服务不可达（检查地址或稍后再试）')
+  else if (!data) tableArea = React.createElement('div', { className: 'bi-empty', style: { color: '#e5b48a' } }, '加载中')
+  else if (data.unreachable) tableArea = React.createElement('div', { className: 'bi-err', style: { color: '#f87171', padding: '10px 2px' } }, '✗ 数据服务不可达——检查数据主机地址或网络后重试')
   return React.createElement('div', { className: 'bi-page bi-set-wrap' },
     React.createElement('div', { className: 'bi-set-dash' },
       React.createElement(BigRing, { p: p, color: ringColor, text: ringText }),
@@ -662,14 +662,14 @@ function TableManagerSection(props) {
           React.createElement('span', { className: 'bi-dot', style: { background: offline ? GRAY : (running ? GREEN : (cloudOk ? GREEN : RED)) } }),
           React.createElement('span', null, '云平台'),
           React.createElement('span', { className: 'bi-status-val' }, cloudVal),
-          React.createElement(SyncRoundBtn, { title: '手动同步', disabled: busy === 'cloud', onClick: syncCloud })),
+          React.createElement(SyncRoundBtn, { title: '手动同步', accent: '#e5b48a', disabled: busy === 'cloud', onClick: syncCloud })),
         React.createElement('div', { className: 'bi-pill' },
           React.createElement('button', { className: 'bi-capsule-btn', onClick: function () { setFeishuOpen(!feishuOpen) } },
             React.createElement('span', { className: 'bi-dot', style: { background: offline ? GRAY : feishuDot } }),
             React.createElement('span', null, '飞书'),
             React.createElement('span', { className: 'bi-status-val' }, feishuVal),
             React.createElement('span', { className: 'bi-chevron' + (feishuOpen ? ' open' : '') }, '▸')),
-          React.createElement(SyncRoundBtn, { title: '手动同步（货架/陈列/采购）', disabled: busy === 'feishu', onClick: syncFeishu })),
+          React.createElement(SyncRoundBtn, { title: '手动同步（货架/陈列/采购）', accent: '#e5b48a', disabled: busy === 'feishu', onClick: syncFeishu })),
         React.createElement('button', { className: 'bi-pill bi-pill-btn' + (needLogin ? ' bi-set-login-warn' : ''), disabled: busy === 'login', onClick: triggerLogin }, busy === 'login' ? '启动中…' : '一键登录')),
       feishuOpen ? React.createElement('div', { className: 'bi-feishu-detail' },
         feishuDefs.map(function (def) {
@@ -680,8 +680,8 @@ function TableManagerSection(props) {
             React.createElement('span', { className: 'bi-status-name' }, def[1]),
             React.createElement('span', { className: 'bi-status-val' }, val))
         })) : null),
-    loginMsg ? React.createElement('div', { className: 'bi-set-note', style: { margin: '8px 0' } }, loginMsg) : null,
-    React.createElement('div', { style: { background: 'var(--dsw-alias-bg-layer-1,#161a23)', border: '1px solid var(--dsw-alias-border-l1,#2a2e3d)', borderRadius: '12px', padding: '14px 16px', margin: '8px 0' } },
+    loginMsg ? React.createElement('div', { className: 'bi-set-note', style: { margin: '8px 0', color: '#e5b48a' } }, loginMsg) : null,
+    React.createElement('div', { style: { background: 'var(--dsw-alias-bg-layer-1,#161a23)', border: '1px solid #3d2f1f', borderRadius: '12px', padding: '14px 16px', margin: '8px 0' } },
       React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
         React.createElement('span', { style: { fontSize: '13px', color: '#f97316', flex: 'none' } }, '数据主机'),
         React.createElement('input', { type: 'text', value: editMode ? hostInput : curCfg.dataApi, placeholder: 'http://192.168.1.100:8600', readOnly: !editMode, onChange: function (e) { setHostInput(e.target.value) }, style: Object.assign({}, addrInputStyle, { background: editMode ? '#11151d' : '#0d1017', color: editMode ? '#e5e9f0' : '#e5b48a', borderColor: editMode ? '#f97316' : '#3d2f1f' }) }),
@@ -690,13 +690,13 @@ function TableManagerSection(props) {
         !editMode ? React.createElement('button', { key: 'copy', className: 'bi-btn', style: iconBtn, onMouseEnter: iconBtnHover.onMouseEnter, onMouseLeave: iconBtnHover.onMouseLeave, title: '复制地址', onClick: function () { copyText(curCfg.dataApi) } }, React.createElement(MiniIcon, { d: ICON_COPY })) : null,
         !editMode ? React.createElement('button', { key: 'test2', className: 'bi-btn', style: iconBtn, onMouseEnter: iconBtnHover.onMouseEnter, onMouseLeave: iconBtnHover.onMouseLeave, title: '测试连接', disabled: addrMsg === '测试中…', onClick: testCur }, React.createElement(MiniIcon, { d: ICON_BOLT, viewBox: '0 0 1179 1024' })) : null,
         !editMode ? React.createElement('button', { key: 'edit', className: 'bi-btn', style: iconBtn, onMouseEnter: iconBtnHover.onMouseEnter, onMouseLeave: iconBtnHover.onMouseLeave, title: '编辑', onClick: function () { setHostInput(curCfg.dataApi); setEditMode(true) } }, React.createElement(MiniIcon, { d: ICON_EDIT })) : null),
-      addrMsg ? React.createElement('div', { style: { marginTop: '6px', fontSize: '12px', color: addrOk === false ? '#f87171' : (addrOk === true ? '#4ade80' : '#9fb3d8') } }, addrMsg) : null,
+      addrMsg ? React.createElement('div', { style: { marginTop: '6px', fontSize: '12px', color: addrOk === false ? '#f87171' : (addrOk === true ? '#4ade80' : '#e5b48a') } }, addrMsg) : null,
       copyTip ? React.createElement('div', { style: { marginTop: '4px', fontSize: '12px', color: '#4ade80' } }, '已复制') : null,
       React.createElement('div', { style: { marginTop: '8px', fontSize: '12px' } },
-        React.createElement('button', { style: { background: 'none', border: 'none', color: '#9fb3d8', cursor: 'pointer', padding: '0', fontSize: '12px' }, onMouseEnter: function (e) { e.currentTarget.style.color = '#f97316' }, onMouseLeave: function (e) { e.currentTarget.style.color = '#9fb3d8' }, onClick: function () { setAdvOpen(!advOpen); if (!statusInput && curCfg.statusUrl) setStatusInput(curCfg.statusUrl) } },
+        React.createElement('button', { style: { background: 'none', border: 'none', color: '#e5b48a', cursor: 'pointer', padding: '0', fontSize: '12px' }, onMouseEnter: function (e) { e.currentTarget.style.color = '#f97316' }, onMouseLeave: function (e) { e.currentTarget.style.color = '#e5b48a' }, onClick: function () { setAdvOpen(!advOpen); if (!statusInput && curCfg.statusUrl) setStatusInput(curCfg.statusUrl) } },
           (advOpen ? '▾ ' : '▸ ') + '其他'),
         advOpen ? React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' } },
-          React.createElement('span', { style: { fontSize: '12px', color: '#9fb3d8', flex: 'none' } }, '状态服务'),
+          React.createElement('span', { style: { fontSize: '12px', color: '#e5b48a', flex: 'none' } }, '状态服务'),
           React.createElement('input', { type: 'text', value: statusInput, placeholder: 'http://192.168.1.100:8080', onChange: function (e) { setStatusInput(e.target.value) }, style: addrInputStyle }),
           React.createElement('button', { className: 'bi-btn', style: iconBtn, onMouseEnter: iconBtnHover.onMouseEnter, onMouseLeave: iconBtnHover.onMouseLeave, title: '保存', disabled: addrMsg === '保存中…', onClick: saveHost }, React.createElement(MiniIcon, { d: ICON_CHECK }))) : null)),
     tableArea == null ? React.createElement(React.Fragment, null,
@@ -738,7 +738,7 @@ function TableManagerSection(props) {
         onChange: function (e) { const v = e.target.value; setFreq(function (prev) { const n = Object.assign({}, prev); n.cloud = Object.assign({}, prev.cloud || {}, { interval_minutes: v }); return n }) }
       }),
       React.createElement('button', { className: 'bi-btn', disabled: busy === 'freq-cloud', onClick: function () { saveFreq('cloud') } }, busy === 'freq-cloud' ? '保存中' : (saved === 'cloud' ? '已保存 ✓' : '保存')),
-      React.createElement('span', { className: 'bi-set-note' }, '商品 / 订单 / 库存 / 用户')),
+      React.createElement('span', { className: 'bi-set-note', style: { color: '#e5b48a' } }, '商品 / 订单 / 库存 / 用户')),
     React.createElement('div', { className: 'bi-set-freq' },
       React.createElement('span', { style: { minWidth: '80px', fontSize: '13px' } }, '飞书'),
       React.createElement('input', {
@@ -746,7 +746,7 @@ function TableManagerSection(props) {
         onChange: function (e) { const v = e.target.value; setFreq(function (prev) { const n = Object.assign({}, prev); n.shelf = Object.assign({}, prev.shelf || {}, { interval_minutes: v }); return n }) }
       }),
       React.createElement('button', { className: 'bi-btn', disabled: busy === 'freq-feishu', onClick: function () { saveFreq('feishu') } }, busy === 'freq-feishu' ? '保存中' : (saved === 'feishu' ? '已保存 ✓' : '保存')),
-      React.createElement('span', { className: 'bi-set-note' }, '同时作用于货架 / 陈列标准 / 采购三条管线'))
+      React.createElement('span', { className: 'bi-set-note', style: { color: '#e5b48a' } }, '同时作用于货架 / 陈列标准 / 采购三条管线'))
     ) : tableArea)
 }
 function VfValues(props) {
