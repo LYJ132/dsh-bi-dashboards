@@ -198,7 +198,8 @@ const ICON_COPY = 'M731.68184 676.057473 731.68184 183.323259c0-30.233582-24.512
 const ICON_EDIT = 'M872.533333 307.2c0-21.333333-8.533333-42.666667-23.466666-57.6l-91.733334-91.733333c-32-32-85.333333-32-115.2 0L177.066667 622.933333c-4.266667 4.266667-6.4 8.533333-8.533334 14.933334l-49.066666 213.333333c-2.133333 10.666667 0 21.333333 8.533333 29.866667 6.4 6.4 14.933333 8.533333 23.466667 8.533333h6.4l213.333333-49.066667c6.4-2.133333 10.666667-4.266667 14.933333-8.533333l465.066667-465.066667c12.8-17.066667 21.333333-38.4 21.333333-59.733333z m-68.266666 12.8L345.6 778.666667 192 814.933333l36.266667-153.6L686.933333 202.666667c6.4-6.4 19.2-6.4 25.6 0l91.733334 91.733333c4.266667 4.266667 4.266667 8.533333 4.266666 12.8 0 4.266667 0 8.533333-4.266666 12.8zM874.666667 825.6H599.466667c-17.066667 0-32 14.933333-32 32s14.933333 32 32 32H874.666667c17.066667 0 32-14.933333 32-32s-14.933333-32-32-32z'
 const ICON_BOLT = 'M582.39205 0l52.805057 34.254652-388.450271 598.80154-52.805057-34.254652 388.450271-598.80154z m228.146057 390.868247l52.805057 34.254652-388.450271 598.801539-52.805057-34.254652 388.450271-598.801539z m0 0 M585.477488 0h57.250605v379.420644H585.477488z M585.477488 368.086384h277.865676v57.238012H585.477488v-57.238012zM193.954373 599.494189h280.485149v57.250606H193.954373v-57.250606z m0 0 M417.188917 647.82851h57.238012v376.17149h-57.238012z'
 const ICON_CHECK = 'M218.843 208.468c-4.55 2.434-7.941 5.825-10.375 10.375-3.3 6.171-4.468 12.218-4.468 32.074v522.166c0 19.856 1.168 25.903 4.468 32.074 2.434 4.55 5.825 7.941 10.375 10.375 6.171 3.3 12.218 4.468 32.074 4.468h522.166c19.856 0 25.903-1.168 32.074-4.468 4.55-2.434 7.941-5.825 10.375-10.375 3.3-6.171 4.468-12.218 4.468-32.074V357.176c0-12.479-0.295-16.284-1.164-20.053-0.62-2.694-1.514-4.85-2.98-7.195-2.05-3.279-4.533-6.178-13.357-15.002L709.074 221.5c-8.824-8.824-11.723-11.307-15.002-13.358-2.344-1.465-4.5-2.359-7.195-2.98-3.769-0.868-7.574-1.163-20.053-1.163H250.917c-19.856 0-25.903 1.168-32.074 4.468zM250.917 144h415.907c16.624 0 24.466 0.608 33.529 2.696 9.186 2.117 17.54 5.578 25.533 10.576 7.885 4.932 13.86 10.047 25.615 21.802l93.425 93.425c11.755 11.756 16.87 17.73 21.802 25.615 4.998 7.993 8.459 16.347 10.576 25.533 2.088 9.063 2.696 16.905 2.696 33.53v415.906c0 28.914-2.975 44.318-11.56 60.37-8.025 15.006-19.98 26.962-34.987 34.987-16.052 8.585-31.456 11.56-60.37 11.56H250.917c-28.914 0-44.318-2.975-60.37-11.56-15.006-8.025-26.962-19.98-34.987-34.987-8.585-16.052-11.56-31.456-11.56-60.37V250.917c0-28.914 2.975-44.318 11.56-60.37 8.025-15.006 19.98-26.962 34.987-34.987 16.052-8.585 31.456-11.56 60.37-11.56zM674 203.475h60v199.686c0 30.316-3.854 46.832-14.731 63.661-9.743 15.074-23.834 26.734-41.15 34.397C659.975 509.25 642.757 512 608.723 512H415.277c-34.034 0-51.252-2.751-69.396-10.78-17.316-7.664-31.407-19.324-41.15-34.398C293.854 449.992 290 433.477 290 403.161V203.88h60v199.28c0 11.255 0.63 18.6 1.75 23.393 0.7 3.004 1.507 4.814 3.373 7.7 3.212 4.971 8.132 9.042 15.04 12.099 9.385 4.153 18.738 5.648 45.114 5.648h193.446c26.376 0 35.73-1.495 45.115-5.648 6.907-3.057 11.827-7.128 15.04-12.098 1.865-2.887 2.672-4.697 3.373-7.7 1.118-4.794 1.749-12.139 1.749-23.393V203.475z'
-const iconBtn = { width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0', borderRadius: '8px', border: '1px solid #2a2e3d', background: '#1d2330', color: '#cdd6e4', cursor: 'pointer', flex: 'none' }
+const iconBtn = { width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0', borderRadius: '8px', border: '1px solid #3d2f1f', background: '#241c10', color: '#f97316', cursor: 'pointer', flex: 'none' }
+const iconBtnHover = { onMouseEnter: function (e) { e.currentTarget.style.borderColor = '#f97316' }, onMouseLeave: function (e) { e.currentTarget.style.borderColor = '#3d2f1f' } }
 function toEcharts(c) { const o = c.option || {}; if (o.type === 'pie') return { tooltip: { trigger: 'item' }, series: o.series }; var labels = (o.xAxis && o.xAxis.data) || []; var maxLen = 0; labels.forEach(function (l) { var s = String(l == null ? '' : l); if (s.length > maxLen) maxLen = s.length }); var rot = maxLen <= 6 ? 0 : maxLen <= 12 ? 30 : maxLen <= 18 ? 45 : 60; var axisLabel = Object.assign({}, (o.xAxis && o.xAxis.axisLabel) || {}, { rotate: rot, interval: 0, hideOverlap: true, overflow: 'truncate', formatter: function (v) { var s = String(v == null ? '' : v); return s.length > 12 ? s.slice(0, 12) + '…' : s } }); var xAxis = Object.assign({}, o.xAxis || {}, { axisLabel: axisLabel }); var grid = Object.assign({ containLabel: true, left: 14, right: 18, top: 42, bottom: 14 }, o.grid || {}); return { tooltip: { trigger: 'axis' }, grid: grid, xAxis: xAxis, yAxis: o.yAxis, color: [ORANGE], series: o.series, dataZoom: [{ type: 'inside', start: 0, end: 100, minValueSpan: 1 }] } }
 function ensureEcharts(cb) { if (typeof window !== 'undefined' && window.echarts) { cb(); return } if (typeof document !== 'undefined') { const s = document.createElement('script'); s.src = '/bi/vendor/echarts.min.js'; s.onload = function () { cb() }; document.head.appendChild(s) } }
 function renderChartBody(chart, dashId, i) { if (chart.type === 'kpi') return React.createElement('div', { className: 'bi-kpi' }, chart.option ? chart.option.value : ''); if (chart.type === 'text') return React.createElement('div', { className: 'bi-text' }, chart.text || chart.title); if (chart.type === 'table') { const cols = (chart.option && chart.option.columns) || []; const labels = (chart.option && chart.option.columnLabels) || {}; const rows = (chart.option && chart.option.rows) || []; return React.createElement('table', { className: 'bi-table' }, React.createElement('thead', null, React.createElement('tr', null, cols.map(function (cl, j) { return React.createElement('th', { key: j, title: cl }, labels[cl] || cl) }))), React.createElement('tbody', null, rows.map(function (r, ri) { return React.createElement('tr', { key: ri }, cols.map(function (cl, ci) { return React.createElement('td', { key: ci }, String(r[cl] === null || r[cl] === undefined ? '' : r[cl])) })) }))) }
@@ -237,11 +238,11 @@ function SyncBar(props) {
   const ringColor = running ? GREEN : ORANGE
   const cloud = st || {}
   const cloudOk = cloud.success !== false
-  const cloudVal = running ? '进行中' : (cloud.success === true ? '成功 ' + fmtTs(cloud.end_time) : (cloud.success === false ? '失败' : '-'))
+  const cloudVal = offline ? '离线' : (running ? '进行中' : (cloud.success === true ? '成功 ' + fmtTs(cloud.end_time) : (cloud.success === false ? '失败' : '-')))
   const feishuDefs = [['shelf_sync', '货架'], ['standard_qty_sync', '陈列'], ['procurement_sync', '采购']]
   const feishuStats = feishuDefs.map(function (d) { return st ? st[d[0]] : null })
   const anyFail = feishuStats.some(function (s) { return s && s.success === false })
-  const feishuVal = anyFail ? '异常' : '正常'
+  const feishuVal = offline ? '离线' : (anyFail ? '异常' : '正常')
   return React.createElement('div', { className: 'bi-sync-bar' },
     React.createElement(BigRing, { p: p, color: ringColor, text: ringText, size: 56, font: 12 }),
     React.createElement('div', { className: 'bi-pill' },
@@ -572,7 +573,7 @@ function TableManagerSection(props) {
     const b = TIMER_INTERVAL(function () { if (!dead) setNowTs(Date.now()) }, 1000)
     return function () { dead = true; if (a) a(); if (b) b() }
   }, [])
-  const addrInputStyle = { flex: '1', minWidth: '260px', boxSizing: 'border-box', padding: '6px 10px', borderRadius: '8px', border: '1px solid #2a2e3d', background: '#11151d', color: '#e5e9f0', fontSize: '13px', outline: 'none' }
+  const addrInputStyle = { flex: '1', minWidth: '260px', boxSizing: 'border-box', padding: '6px 10px', borderRadius: '8px', border: '1px solid #3d2f1f', background: '#11151d', color: '#e5e9f0', fontSize: '13px', outline: 'none' }
   const fallbackCopy = function (txt) { try { const ta = document.createElement('textarea'); ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta) } catch (e) {} }
   const copyText = function (txt) {
     const done = function () { setCopyTip(txt); if (TIMER_TIMEOUT) TIMER_TIMEOUT(function () { setCopyTip('') }, 1500) }
@@ -640,15 +641,15 @@ function TableManagerSection(props) {
   const needLogin = login.state === 'invalid' || login.state === 'unknown'
   const cloud = st || {}
   const cloudOk = cloud.success !== false
-  const cloudVal = running ? '进行中' : (cloud.success === true ? '成功 ' + fmtTs(cloud.end_time) : (cloud.success === false ? '失败' : '-'))
+  const cloudVal = offline ? '离线' : (running ? '进行中' : (cloud.success === true ? '成功 ' + fmtTs(cloud.end_time) : (cloud.success === false ? '失败' : '-')))
   const feishuDefs = [['shelf_sync', '货架信息'], ['standard_qty_sync', '陈列标准'], ['procurement_sync', '采购管理']]
   const feishuStats = feishuDefs.map(function (d) { return st ? st[d[0]] : null })
   const anyFail = feishuStats.some(function (s) { return s && s.success === false })
   const allOk = feishuStats.length === 3 && feishuStats.every(function (s) { return s && s.success === true })
   let latestTs = 0
   feishuStats.forEach(function (s) { if (s && s.checked_at) { const t = Date.parse(s.checked_at); if (t > latestTs) latestTs = t } })
-  const feishuVal = anyFail ? '异常' : allOk ? '成功 ' + fmtTs(latestTs ? new Date(latestTs).toISOString() : null) : '未到期'
-  const feishuDot = anyFail ? RED : GREEN
+  const feishuVal = offline ? '离线' : (anyFail ? '异常' : allOk ? '成功 ' + fmtTs(latestTs ? new Date(latestTs).toISOString() : null) : '未到期')
+  const feishuDot = offline ? GRAY : (anyFail ? RED : GREEN)
   let tableArea = null
   if (err) tableArea = React.createElement('div', { className: 'bi-err' }, '加载失败: ' + err)
   else if (!data) tableArea = React.createElement('div', { className: 'bi-empty' }, '加载中')
@@ -673,32 +674,31 @@ function TableManagerSection(props) {
       feishuOpen ? React.createElement('div', { className: 'bi-feishu-detail' },
         feishuDefs.map(function (def) {
           const ps = st ? st[def[0]] : null
-          const val = ps && ps.success === true ? '成功 ' + fmtTs(ps.checked_at) : (ps && ps.success === false ? '失败' : ((ps && ps.detail) || '-'))
+          const val = offline ? '离线' : (ps && ps.success === true ? '成功 ' + fmtTs(ps.checked_at) : (ps && ps.success === false ? '失败' : ((ps && ps.detail) || '-')))
           return React.createElement('span', { className: 'bi-status-row', key: def[0] },
-            React.createElement('span', { className: 'bi-dot', style: { background: ps && ps.success === false ? RED : GREEN } }),
+            React.createElement('span', { className: 'bi-dot', style: { background: offline ? GRAY : (ps && ps.success === false ? RED : GREEN) } }),
             React.createElement('span', { className: 'bi-status-name' }, def[1]),
             React.createElement('span', { className: 'bi-status-val' }, val))
         })) : null),
     loginMsg ? React.createElement('div', { className: 'bi-set-note', style: { margin: '8px 0' } }, loginMsg) : null,
     React.createElement('div', { style: { background: 'var(--dsw-alias-bg-layer-1,#161a23)', border: '1px solid var(--dsw-alias-border-l1,#2a2e3d)', borderRadius: '12px', padding: '14px 16px', margin: '8px 0' } },
       React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
-        React.createElement('span', { style: { fontSize: '13px', color: '#9fb3d8', flex: 'none' } }, '数据主机'),
-        React.createElement('input', { type: 'text', value: editMode ? hostInput : curCfg.dataApi, placeholder: 'http://192.168.1.100:8600', readOnly: !editMode, onChange: function (e) { setHostInput(e.target.value) }, style: Object.assign({}, addrInputStyle, { background: editMode ? '#11151d' : '#0d1017', color: editMode ? '#e5e9f0' : '#9fb3d8' }) }),
-        editMode ? React.createElement('button', { key: 'test', className: 'bi-btn', style: iconBtn, title: '测试连接', disabled: addrMsg === '测试中…', onClick: testCur }, React.createElement(MiniIcon, { d: ICON_BOLT, viewBox: '0 0 1179 1024' })) : null,
-        editMode ? React.createElement('button', { key: 'save', className: 'bi-btn', style: iconBtn, title: '保存', disabled: addrMsg === '保存中…', onClick: saveHost }, React.createElement(MiniIcon, { d: ICON_CHECK })) : null,
-        !editMode ? React.createElement('button', { key: 'copy', className: 'bi-btn', style: iconBtn, title: '复制地址', onClick: function () { copyText(curCfg.dataApi) } }, React.createElement(MiniIcon, { d: ICON_COPY })) : null,
-        !editMode ? React.createElement('button', { key: 'test2', className: 'bi-btn', style: iconBtn, title: '测试连接', disabled: addrMsg === '测试中…', onClick: testCur }, React.createElement(MiniIcon, { d: ICON_BOLT, viewBox: '0 0 1179 1024' })) : null,
-        !editMode ? React.createElement('button', { key: 'edit', className: 'bi-btn', style: iconBtn, title: '编辑', onClick: function () { setHostInput(curCfg.dataApi); setEditMode(true) } }, React.createElement(MiniIcon, { d: ICON_EDIT })) : null),
+        React.createElement('span', { style: { fontSize: '13px', color: '#f97316', flex: 'none' } }, '数据主机'),
+        React.createElement('input', { type: 'text', value: editMode ? hostInput : curCfg.dataApi, placeholder: 'http://192.168.1.100:8600', readOnly: !editMode, onChange: function (e) { setHostInput(e.target.value) }, style: Object.assign({}, addrInputStyle, { background: editMode ? '#11151d' : '#0d1017', color: editMode ? '#e5e9f0' : '#e5b48a', borderColor: editMode ? '#f97316' : '#3d2f1f' }) }),
+        editMode ? React.createElement('button', { key: 'test', className: 'bi-btn', style: iconBtn, onMouseEnter: iconBtnHover.onMouseEnter, onMouseLeave: iconBtnHover.onMouseLeave, title: '测试连接', disabled: addrMsg === '测试中…', onClick: testCur }, React.createElement(MiniIcon, { d: ICON_BOLT, viewBox: '0 0 1179 1024' })) : null,
+        editMode ? React.createElement('button', { key: 'save', className: 'bi-btn', style: iconBtn, onMouseEnter: iconBtnHover.onMouseEnter, onMouseLeave: iconBtnHover.onMouseLeave, title: '保存', disabled: addrMsg === '保存中…', onClick: saveHost }, React.createElement(MiniIcon, { d: ICON_CHECK })) : null,
+        !editMode ? React.createElement('button', { key: 'copy', className: 'bi-btn', style: iconBtn, onMouseEnter: iconBtnHover.onMouseEnter, onMouseLeave: iconBtnHover.onMouseLeave, title: '复制地址', onClick: function () { copyText(curCfg.dataApi) } }, React.createElement(MiniIcon, { d: ICON_COPY })) : null,
+        !editMode ? React.createElement('button', { key: 'test2', className: 'bi-btn', style: iconBtn, onMouseEnter: iconBtnHover.onMouseEnter, onMouseLeave: iconBtnHover.onMouseLeave, title: '测试连接', disabled: addrMsg === '测试中…', onClick: testCur }, React.createElement(MiniIcon, { d: ICON_BOLT, viewBox: '0 0 1179 1024' })) : null,
+        !editMode ? React.createElement('button', { key: 'edit', className: 'bi-btn', style: iconBtn, onMouseEnter: iconBtnHover.onMouseEnter, onMouseLeave: iconBtnHover.onMouseLeave, title: '编辑', onClick: function () { setHostInput(curCfg.dataApi); setEditMode(true) } }, React.createElement(MiniIcon, { d: ICON_EDIT })) : null),
       addrMsg ? React.createElement('div', { style: { marginTop: '6px', fontSize: '12px', color: addrOk === false ? '#f87171' : (addrOk === true ? '#4ade80' : '#9fb3d8') } }, addrMsg) : null,
       copyTip ? React.createElement('div', { style: { marginTop: '4px', fontSize: '12px', color: '#4ade80' } }, '已复制') : null,
       React.createElement('div', { style: { marginTop: '8px', fontSize: '12px' } },
-        React.createElement('button', { style: { background: 'none', border: 'none', color: '#9fb3d8', cursor: 'pointer', padding: '0', fontSize: '12px' }, onClick: function () { setAdvOpen(!advOpen); if (!statusInput && curCfg.statusUrl) setStatusInput(curCfg.statusUrl) } },
+        React.createElement('button', { style: { background: 'none', border: 'none', color: '#9fb3d8', cursor: 'pointer', padding: '0', fontSize: '12px' }, onMouseEnter: function (e) { e.currentTarget.style.color = '#f97316' }, onMouseLeave: function (e) { e.currentTarget.style.color = '#9fb3d8' }, onClick: function () { setAdvOpen(!advOpen); if (!statusInput && curCfg.statusUrl) setStatusInput(curCfg.statusUrl) } },
           (advOpen ? '▾ ' : '▸ ') + '其他'),
         advOpen ? React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' } },
           React.createElement('span', { style: { fontSize: '12px', color: '#9fb3d8', flex: 'none' } }, '状态服务'),
-          React.createElement('input', { type: 'text', value: statusInput, placeholder: 'http://192.168.1.100:8080', onChange: function (e) { setStatusInput(e.target.value) }, style: addrInputStyle })) : null),
-      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginTop: advOpen ? '6px' : '0' } },
-        advOpen ? React.createElement('button', { className: 'bi-btn', disabled: addrMsg === '保存中…', onClick: saveHost }, '保存') : null)),
+          React.createElement('input', { type: 'text', value: statusInput, placeholder: 'http://192.168.1.100:8080', onChange: function (e) { setStatusInput(e.target.value) }, style: addrInputStyle }),
+          React.createElement('button', { className: 'bi-btn', style: iconBtn, onMouseEnter: iconBtnHover.onMouseEnter, onMouseLeave: iconBtnHover.onMouseLeave, title: '保存', disabled: addrMsg === '保存中…', onClick: saveHost }, React.createElement(MiniIcon, { d: ICON_CHECK }))) : null)),
     tableArea == null ? React.createElement(React.Fragment, null,
       React.createElement('div', { className: 'bi-set-h2' }, '数据表访问开关'),
     React.createElement('table', { className: 'bi-set-table' },
