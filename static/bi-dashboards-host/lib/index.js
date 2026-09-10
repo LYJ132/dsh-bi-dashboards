@@ -450,11 +450,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
         out.push({ iface: name, ip: ip, dataApi: 'http://' + ip + ':' + dPort, statusUrl: 'http://' + ip + ':' + sPort })
       })
     })
-    let isDataHost = false
-    let dPort = '8600'
-    try { dPort = new URL(CFG.dataApi).port || '8600' } catch (e) {}
-    try { const r = await fetch('http://localhost:' + dPort + '/health', { signal: AbortSignal.timeout(3000) }); isDataHost = r.ok } catch (e) { isDataHost = false }
-    return { isDataHost: isDataHost, addresses: out, dataApi: CFG.dataApi, statusUrl: CFG.statusUrl }
+    return { addresses: out, dataApi: CFG.dataApi, statusUrl: CFG.statusUrl }
   }
   console.log('[bi] Phase5 Host 已加载 (static v1)')
   if (ws) ctx.effect(() => ws.register({ kind: 'exact', path: '/bi/api', handler: async (req, res) => {

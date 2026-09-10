@@ -12,6 +12,7 @@ node_modules/
 # 编辑备份与一次性安装包
 *.bak
 *.bak2
+*.bak3
 *.exe
 
 # 本机部署归档产物

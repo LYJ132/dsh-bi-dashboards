@@ -669,8 +669,8 @@ function TableManagerSection(props) {
     loginMsg ? React.createElement('div', { className: 'bi-set-note', style: { margin: '8px 0' } }, loginMsg) : null,
     React.createElement('div', { style: { background: 'var(--dsw-alias-bg-layer-1,#161a23)', border: '1px solid var(--dsw-alias-border-l1,#2a2e3d)', borderRadius: '12px', padding: '14px 16px', margin: '8px 0' } },
       React.createElement('div', { style: { fontSize: '14px', fontWeight: 600, marginBottom: '8px' } }, '数据主机地址'),
-      localInfo && localInfo.isDataHost ? React.createElement('div', { style: { marginBottom: '10px' } },
-        React.createElement('div', { style: { fontSize: '13px', color: '#4ade80', marginBottom: '6px' } }, '✓ 本机就是数据主机——其他电脑要用看板时，复制下面的地址填到它们各自的设置页里：'),
+      localInfo ? React.createElement('div', { style: { marginBottom: '10px' } },
+        React.createElement('div', { style: { fontSize: '13px', color: '#9fb3d8', marginBottom: '6px' } }, '本机（这台电脑）的局域网地址——如果本机就是数据主机，把地址复制给其他机器的设置页；如果不是，忽略这里，直接在下方粘贴数据主机的地址：'),
         React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px' } },
           (localInfo.addresses || []).map(function (a, i) {
             return React.createElement('span', { key: i, style: { display: 'inline-flex', alignItems: 'center', gap: '8px', background: '#1d2330', border: '1px solid #2a2e3d', borderRadius: '8px', padding: '5px 10px', fontSize: '13px' } },
@@ -678,7 +678,6 @@ function TableManagerSection(props) {
               React.createElement('button', { style: btnMini, title: '复制这个地址', onClick: function () { copyText(a.dataApi) } }, '复制'))
           })),
         (localInfo.addresses || []).length === 0 ? React.createElement('div', { style: { fontSize: '12px', color: '#9fb3d8' } }, '未检测到局域网地址') : null) : null,
-      localInfo && !localInfo.isDataHost ? React.createElement('div', { style: { fontSize: '13px', color: '#9fb3d8', marginBottom: '10px' } }, '本机不是数据主机——请在下方粘贴数据主机的地址（可在数据主机那台电脑的此页面复制）') : null,
       React.createElement('div', { style: { fontSize: '13px', marginBottom: '6px' } },
         React.createElement('span', { style: { color: '#9fb3d8' } }, '当前连接的数据主机：'),
         React.createElement('span', { style: { fontFamily: 'monospace', color: '#e5e9f0' } }, curCfg.dataApi || '未配置'),
