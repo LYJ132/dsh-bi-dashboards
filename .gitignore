@@ -15,3 +15,6 @@ node_modules/
 
 # 本机部署归档产物
 config.json.migrated
+
+# 分发压缩包与 bundle（由 git archive / git bundle 生成，不入库）
+dist/
