@@ -433,24 +433,6 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     if (!/^https?:\/\//.test(raw)) return { ok: false, error: '地址需以 http:// 或 https:// 开头' }
     try { const r = await fetch(raw + '/api/meta/tables', { signal: AbortSignal.timeout(5000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status }; const j = await r.json(); return { ok: true, tables: (j.tables || []).length } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) } }
   }
-  biApi['bi.getLocalAddresses'] = async () => {
-    await cfgReady
-    const os = await import('node:os')
-    const nets = os.networkInterfaces()
-    const out = []
-    Object.keys(nets).forEach(function (name) {
-      ;(nets[name] || []).forEach(function (ni) {
-        if (ni.family !== 'IPv4' || ni.internal) return
-        const ip = ni.address
-        if (/^127\./.test(ip) || /^169\.254\./.test(ip)) return
-        let dPort = '8600', sPort = '8080'
-        try { dPort = new URL(CFG.dataApi).port || '8600' } catch (e) {}
-        try { sPort = new URL(CFG.statusUrl).port || '8080' } catch (e) {}
-        out.push({ iface: name, ip: ip, dataApi: 'http://' + ip + ':' + dPort, statusUrl: 'http://' + ip + ':' + sPort })
-      })
-    })
-    return { addresses: out, dataApi: CFG.dataApi, statusUrl: CFG.statusUrl }
-  }
   console.log('[bi] Phase5 Host 已加载 (static v1)')
   if (ws) ctx.effect(() => ws.register({ kind: 'exact', path: '/bi/api', handler: async (req, res) => {
     await cfgReady

@@ -41,3 +41,4 @@
 4. **验证三道门 + 1**：顶层定义清单核对 / stub React hooks 渲染模拟 / 方法对齐（client 调用 ⊆ host biApi）+ Playwright 真实浏览器回归
 5. **运行时差异**：CSS 类样式被全局压制（交互控件用内联样式）；SVG 表现属性不支持 CSS 变量；host 侧 fire-and-forget 子进程会消失（触发类走 :8080 通道）；asyncpg JSONB 读回 str 需 json.loads；web/ 状态服务器已迁 `bi-plugin/web/`（crawler 的 /opt/web 挂载指向此处）
 6. **部署**：编辑 `static/bi-dashboards-*/lib/*.js`（bundle 即源码）→ node --check → 三道门 → cp 到 node_modules → **重启 DSH 生效**（client 刷新即生效）；机器相关路径/地址（dataApi/statusUrl/vendorFile/storeFile/crawlConfigFile）统一在包目录 `config.json`（缺失自动生成默认值；本机 config 指向 bi-plugin 原路径），异机安装走 INSTALL.md + `static/scripts/install-to-dsh.sh`
+7. **UI 文本极简 + icon 按钮**：交互按钮优先用 SVG icon（24 网格 MiniIcon 组件，Material path），非必要不用文字按钮；界面提示语最小化（错误/状态反馈除外），说明性长文案一律写文档不进 UI；标签只写必要名词（如「数据主机」「其他」）

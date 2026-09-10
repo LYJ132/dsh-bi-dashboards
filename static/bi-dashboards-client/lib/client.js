@@ -193,6 +193,12 @@ const CSS = `
 .bi-feishu-detail { flex-basis:100%; display:flex; gap:24px; padding:2px 4px 0; flex-wrap:wrap; }
 `
 function Icon(props) { return React.createElement('svg', { viewBox: '0 0 1024 1024', width: props.size || 16, height: props.size || 16, style: { display: 'block' }, 'aria-hidden': true }, React.createElement('path', { d: props.d, fill: 'currentColor' })) }
+function MiniIcon(props) { return React.createElement('svg', { viewBox: '0 0 24 24', width: props.size || 15, height: props.size || 15, style: { display: 'block' }, 'aria-hidden': true }, React.createElement('path', { d: props.d, fill: 'currentColor' })) }
+const ICON_COPY = 'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h10v14z'
+const ICON_EDIT = 'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z'
+const ICON_BOLT = 'M7 2v11h3v9l7-12h-4l4-8z'
+const ICON_CHECK = 'M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z'
+const iconBtn = { width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0', borderRadius: '8px', border: '1px solid #2a2e3d', background: '#1d2330', color: '#cdd6e4', cursor: 'pointer', flex: 'none' }
 function toEcharts(c) { const o = c.option || {}; if (o.type === 'pie') return { tooltip: { trigger: 'item' }, series: o.series }; var labels = (o.xAxis && o.xAxis.data) || []; var maxLen = 0; labels.forEach(function (l) { var s = String(l == null ? '' : l); if (s.length > maxLen) maxLen = s.length }); var rot = maxLen <= 6 ? 0 : maxLen <= 12 ? 30 : maxLen <= 18 ? 45 : 60; var axisLabel = Object.assign({}, (o.xAxis && o.xAxis.axisLabel) || {}, { rotate: rot, interval: 0, hideOverlap: true, overflow: 'truncate', formatter: function (v) { var s = String(v == null ? '' : v); return s.length > 12 ? s.slice(0, 12) + '…' : s } }); var xAxis = Object.assign({}, o.xAxis || {}, { axisLabel: axisLabel }); var grid = Object.assign({ containLabel: true, left: 14, right: 18, top: 42, bottom: 14 }, o.grid || {}); return { tooltip: { trigger: 'axis' }, grid: grid, xAxis: xAxis, yAxis: o.yAxis, color: [ORANGE], series: o.series, dataZoom: [{ type: 'inside', start: 0, end: 100, minValueSpan: 1 }] } }
 function ensureEcharts(cb) { if (typeof window !== 'undefined' && window.echarts) { cb(); return } if (typeof document !== 'undefined') { const s = document.createElement('script'); s.src = '/bi/vendor/echarts.min.js'; s.onload = function () { cb() }; document.head.appendChild(s) } }
 function renderChartBody(chart, dashId, i) { if (chart.type === 'kpi') return React.createElement('div', { className: 'bi-kpi' }, chart.option ? chart.option.value : ''); if (chart.type === 'text') return React.createElement('div', { className: 'bi-text' }, chart.text || chart.title); if (chart.type === 'table') { const cols = (chart.option && chart.option.columns) || []; const labels = (chart.option && chart.option.columnLabels) || {}; const rows = (chart.option && chart.option.rows) || []; return React.createElement('table', { className: 'bi-table' }, React.createElement('thead', null, React.createElement('tr', null, cols.map(function (cl, j) { return React.createElement('th', { key: j, title: cl }, labels[cl] || cl) }))), React.createElement('tbody', null, rows.map(function (r, ri) { return React.createElement('tr', { key: ri }, cols.map(function (cl, ci) { return React.createElement('td', { key: ci }, String(r[cl] === null || r[cl] === undefined ? '' : r[cl])) })) }))) }
@@ -547,11 +553,10 @@ function TableManagerSection(props) {
   const [statusInput, setStatusInput] = React.useState('')
   const [addrMsg, setAddrMsg] = React.useState('')
   const [addrOk, setAddrOk] = React.useState(null)
-  const [localInfo, setLocalInfo] = React.useState(null)
+  const [editMode, setEditMode] = React.useState(true)
   const [copyTip, setCopyTip] = React.useState('')
   React.useEffect(function () {
-    biCall('bi.getConfig', {}).then(function (d) { if (d && !d.error) setCurCfg({ dataApi: d.dataApi || '', statusUrl: d.statusUrl || '' }) }).catch(function () {})
-    biCall('bi.getLocalAddresses', {}).then(function (d) { if (d && !d.error) setLocalInfo(d) }).catch(function () {})
+    biCall('bi.getConfig', {}).then(function (d) { if (d && !d.error) setCurCfg({ dataApi: d.dataApi || '', statusUrl: d.statusUrl || '' }); setEditMode(!(d && d.dataApi)) }).catch(function () {})
   }, [])
   React.useEffect(function () {
     biCall('bi.getTableConfig', {}).then(function (d) {
@@ -567,7 +572,6 @@ function TableManagerSection(props) {
     const b = TIMER_INTERVAL(function () { if (!dead) setNowTs(Date.now()) }, 1000)
     return function () { dead = true; if (a) a(); if (b) b() }
   }, [])
-  const btnMini = { fontSize: '12px', padding: '2px 8px', borderRadius: '6px', border: '1px solid #2a2e3d', background: '#1d2330', color: '#cdd6e4', cursor: 'pointer' }
   const addrInputStyle = { flex: '1', minWidth: '260px', boxSizing: 'border-box', padding: '6px 10px', borderRadius: '8px', border: '1px solid #2a2e3d', background: '#11151d', color: '#e5e9f0', fontSize: '13px', outline: 'none' }
   const fallbackCopy = function (txt) { try { const ta = document.createElement('textarea'); ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta) } catch (e) {} }
   const copyText = function (txt) {
@@ -575,19 +579,22 @@ function TableManagerSection(props) {
     if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(txt).then(done, function () { fallbackCopy(txt); done() }) } else { fallbackCopy(txt); done() }
   }
   const testCur = function () {
+    const url = (editMode && hostInput.trim()) ? hostInput.trim() : curCfg.dataApi
+    if (!url) { setAddrOk(false); setAddrMsg('✗ 请先填写地址'); return }
     setAddrMsg('测试中…'); setAddrOk(null)
-    biCall('bi.testConnection', { url: curCfg.dataApi }).then(function (r) {
-      if (r && r.ok) { setAddrOk(true); setAddrMsg('✓ 连接成功（' + (r.tables || 0) + ' 张数据表）') }
+    biCall('bi.testConnection', { url: url }).then(function (r) {
+      if (r && r.ok) { setAddrOk(true); setAddrMsg('✓ 连通' + ((r.tables || 0) ? '（' + r.tables + ' 表）' : '')) }
       else { setAddrOk(false); setAddrMsg('✗ ' + ((r && r.error) || '连接失败')) }
     }).catch(function (e) { setAddrOk(false); setAddrMsg('✗ ' + String((e && e.message) || e)) })
   }
   const saveHost = function () {
-    if (!hostInput.trim()) { setAddrOk(false); setAddrMsg('✗ 请先粘贴数据主机的地址'); return }
+    const dataApi = editMode ? hostInput.trim() : curCfg.dataApi
+    if (!dataApi) { setAddrOk(false); setAddrMsg('✗ 请先填写地址'); return }
     setAddrMsg('保存中…')
-    const payload = { dataApi: hostInput.trim() }
+    const payload = { dataApi: dataApi }
     if (advOpen && statusInput.trim()) payload.statusUrl = statusInput.trim()
     biCall('bi.setConfig', payload).then(function (r) {
-      if (r && r.ok) { setCurCfg({ dataApi: r.dataApi, statusUrl: r.statusUrl }); setHostInput(''); setAddrOk(null); setAddrMsg('已保存并生效：数据服务 ' + r.dataApi + (payload.statusUrl ? '，状态服务 ' + r.statusUrl : '')); if (TIMER_TIMEOUT) TIMER_TIMEOUT(function () { setAddrMsg('') }, 5000) }
+      if (r && r.ok) { setCurCfg({ dataApi: r.dataApi, statusUrl: r.statusUrl }); setEditMode(false); setHostInput(''); setAddrOk(null); setAddrMsg('已保存'); if (TIMER_TIMEOUT) TIMER_TIMEOUT(function () { setAddrMsg('') }, 3000) }
       else { setAddrOk(false); setAddrMsg('✗ ' + ((r && r.error) || '保存失败')) }
     }).catch(function (e) { setAddrOk(false); setAddrMsg('✗ ' + String((e && e.message) || e)) })
   }
@@ -672,32 +679,24 @@ function TableManagerSection(props) {
         })) : null),
     loginMsg ? React.createElement('div', { className: 'bi-set-note', style: { margin: '8px 0' } }, loginMsg) : null,
     React.createElement('div', { style: { background: 'var(--dsw-alias-bg-layer-1,#161a23)', border: '1px solid var(--dsw-alias-border-l1,#2a2e3d)', borderRadius: '12px', padding: '14px 16px', margin: '8px 0' } },
-      React.createElement('div', { style: { fontSize: '14px', fontWeight: 600, marginBottom: '8px' } }, '数据主机地址'),
-      localInfo ? React.createElement('div', { style: { marginBottom: '10px' } },
-        React.createElement('div', { style: { fontSize: '13px', color: '#9fb3d8', marginBottom: '6px' } }, '本机（这台电脑）的局域网地址——如果本机就是数据主机，把地址复制给其他机器的设置页；如果不是，忽略这里，直接在下方粘贴数据主机的地址：'),
-        React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px' } },
-          (localInfo.addresses || []).map(function (a, i) {
-            return React.createElement('span', { key: i, style: { display: 'inline-flex', alignItems: 'center', gap: '8px', background: '#1d2330', border: '1px solid #2a2e3d', borderRadius: '8px', padding: '5px 10px', fontSize: '13px' } },
-              React.createElement('span', { style: { fontFamily: 'monospace', color: '#e5e9f0' } }, a.dataApi),
-              React.createElement('button', { style: btnMini, title: '复制这个地址', onClick: function () { copyText(a.dataApi) } }, '复制'))
-          })),
-        (localInfo.addresses || []).length === 0 ? React.createElement('div', { style: { fontSize: '12px', color: '#9fb3d8' } }, '未检测到局域网地址') : null) : null,
-      React.createElement('div', { style: { fontSize: '13px', marginBottom: '6px' } },
-        React.createElement('span', { style: { color: '#9fb3d8' } }, '当前连接的数据主机：'),
-        React.createElement('span', { style: { fontFamily: 'monospace', color: '#e5e9f0' } }, curCfg.dataApi || '未配置'),
-        React.createElement('button', { className: 'bi-btn', style: { marginLeft: '10px' }, onClick: testCur }, '测试连接')),
-      addrMsg ? React.createElement('div', { style: { margin: '6px 0', fontSize: '13px', color: addrOk === false ? '#f87171' : (addrOk === true ? '#4ade80' : '#9fb3d8') } }, addrMsg) : null,
       React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
-        React.createElement('span', { style: { fontSize: '13px', color: '#9fb3d8' } }, '连接其他数据主机：'),
-        React.createElement('input', { type: 'text', value: hostInput, placeholder: '粘贴数据主机的地址，如 http://192.168.1.100:8600', onChange: function (e) { setHostInput(e.target.value) }, style: addrInputStyle }),
-        React.createElement('button', { className: 'bi-btn', disabled: addrMsg === '保存中…', onClick: saveHost }, addrMsg === '保存中…' ? '保存中' : '保存并连接'),
-        copyTip ? React.createElement('span', { style: { fontSize: '12px', color: '#4ade80' } }, '已复制：' + copyTip) : null),
+        React.createElement('span', { style: { fontSize: '13px', color: '#9fb3d8', flex: 'none' } }, '数据主机'),
+        React.createElement('input', { type: 'text', value: editMode ? hostInput : curCfg.dataApi, placeholder: 'http://192.168.1.100:8600', readOnly: !editMode, onChange: function (e) { setHostInput(e.target.value) }, style: Object.assign({}, addrInputStyle, { background: editMode ? '#11151d' : '#0d1017', color: editMode ? '#e5e9f0' : '#9fb3d8' }) }),
+        editMode ? React.createElement('button', { key: 'test', className: 'bi-btn', style: iconBtn, title: '测试连接', disabled: addrMsg === '测试中…', onClick: testCur }, React.createElement(MiniIcon, { d: ICON_BOLT })) : null,
+        editMode ? React.createElement('button', { key: 'save', className: 'bi-btn', style: iconBtn, title: '保存', disabled: addrMsg === '保存中…', onClick: saveHost }, React.createElement(MiniIcon, { d: ICON_CHECK })) : null,
+        !editMode ? React.createElement('button', { key: 'copy', className: 'bi-btn', style: iconBtn, title: '复制地址', onClick: function () { copyText(curCfg.dataApi) } }, React.createElement(MiniIcon, { d: ICON_COPY })) : null,
+        !editMode ? React.createElement('button', { key: 'test2', className: 'bi-btn', style: iconBtn, title: '测试连接', disabled: addrMsg === '测试中…', onClick: testCur }, React.createElement(MiniIcon, { d: ICON_BOLT })) : null,
+        !editMode ? React.createElement('button', { key: 'edit', className: 'bi-btn', style: iconBtn, title: '编辑', onClick: function () { setHostInput(curCfg.dataApi); setEditMode(true) } }, React.createElement(MiniIcon, { d: ICON_EDIT })) : null),
+      addrMsg ? React.createElement('div', { style: { marginTop: '6px', fontSize: '12px', color: addrOk === false ? '#f87171' : (addrOk === true ? '#4ade80' : '#9fb3d8') } }, addrMsg) : null,
+      copyTip ? React.createElement('div', { style: { marginTop: '4px', fontSize: '12px', color: '#4ade80' } }, '已复制') : null,
       React.createElement('div', { style: { marginTop: '8px', fontSize: '12px' } },
         React.createElement('button', { style: { background: 'none', border: 'none', color: '#9fb3d8', cursor: 'pointer', padding: '0', fontSize: '12px' }, onClick: function () { setAdvOpen(!advOpen); if (!statusInput && curCfg.statusUrl) setStatusInput(curCfg.statusUrl) } },
-          (advOpen ? '▾ ' : '▸ ') + '高级：状态服务地址（一般无需修改）'),
+          (advOpen ? '▾ ' : '▸ ') + '其他'),
         advOpen ? React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' } },
-          React.createElement('input', { type: 'text', value: statusInput, placeholder: 'http://192.168.1.100:8080', onChange: function (e) { setStatusInput(e.target.value) }, style: addrInputStyle }),
-          React.createElement('span', { style: { fontSize: '12px', color: '#9fb3d8' } }, '仅当状态服务与数据服务不在同一台主机、或端口不同（默认 8080）时才需要填写；随上方地址一起保存')) : null)),
+          React.createElement('span', { style: { fontSize: '12px', color: '#9fb3d8', flex: 'none' } }, '状态服务'),
+          React.createElement('input', { type: 'text', value: statusInput, placeholder: 'http://192.168.1.100:8080', onChange: function (e) { setStatusInput(e.target.value) }, style: addrInputStyle })) : null),
+      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginTop: advOpen ? '6px' : '0' } },
+        advOpen ? React.createElement('button', { className: 'bi-btn', disabled: addrMsg === '保存中…', onClick: saveHost }, '保存') : null)),
     React.createElement('div', { className: 'bi-set-h2' }, '数据表访问开关'),
     React.createElement('table', { className: 'bi-set-table' },
       React.createElement('thead', null, React.createElement('tr', null,
