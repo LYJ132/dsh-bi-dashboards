@@ -555,6 +555,7 @@ function TableManagerSection(props) {
   const [addrMsg, setAddrMsg] = React.useState('')
   const [addrOk, setAddrOk] = React.useState(null)
   const [editMode, setEditMode] = React.useState(true)
+  const [statusEditMode, setStatusEditMode] = React.useState(false)
   const [copyTip, setCopyTip] = React.useState('')
   React.useEffect(function () {
     biCall('bi.getConfig', {}).then(function (d) { if (d && !d.error) setCurCfg({ dataApi: d.dataApi || '', statusUrl: d.statusUrl || '' }); setEditMode(!(d && d.dataApi)) }).catch(function () {})
@@ -593,9 +594,17 @@ function TableManagerSection(props) {
     if (!dataApi) { setAddrOk(false); setAddrMsg('✗ 请先填写地址'); return }
     setAddrMsg('保存中…')
     const payload = { dataApi: dataApi }
-    if (advOpen && statusInput.trim()) payload.statusUrl = statusInput.trim()
     biCall('bi.setConfig', payload).then(function (r) {
       if (r && r.ok) { setCurCfg({ dataApi: r.dataApi, statusUrl: r.statusUrl }); setEditMode(false); setHostInput(''); setAddrOk(null); setAddrMsg('已保存'); if (TIMER_TIMEOUT) TIMER_TIMEOUT(function () { setAddrMsg('') }, 3000) }
+      else { setAddrOk(false); setAddrMsg('✗ ' + ((r && r.error) || '保存失败')) }
+    }).catch(function (e) { setAddrOk(false); setAddrMsg('✗ ' + String((e && e.message) || e)) })
+  }
+  const saveStatus = function () {
+    const statusUrl = statusInput.trim()
+    if (!statusUrl) { setAddrOk(false); setAddrMsg('✗ 请先填写地址'); return }
+    setAddrMsg('保存中…')
+    biCall('bi.setConfig', { statusUrl: statusUrl }).then(function (r) {
+      if (r && r.ok) { setCurCfg({ dataApi: r.dataApi, statusUrl: r.statusUrl }); setStatusEditMode(false); setAddrOk(null); setAddrMsg('已保存'); if (TIMER_TIMEOUT) TIMER_TIMEOUT(function () { setAddrMsg('') }, 3000) }
       else { setAddrOk(false); setAddrMsg('✗ ' + ((r && r.error) || '保存失败')) }
     }).catch(function (e) { setAddrOk(false); setAddrMsg('✗ ' + String((e && e.message) || e)) })
   }
@@ -697,8 +706,9 @@ function TableManagerSection(props) {
           (advOpen ? '▾ ' : '▸ ') + '其他'),
         advOpen ? React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' } },
           React.createElement('span', { style: { fontSize: '12px', color: '#e5b48a', flex: 'none' } }, '状态服务'),
-          React.createElement('input', { type: 'text', value: statusInput, placeholder: 'http://192.168.1.100:8080', onChange: function (e) { setStatusInput(e.target.value) }, style: addrInputStyle }),
-          React.createElement('button', { className: 'bi-btn', style: iconBtn, onMouseEnter: iconBtnHover.onMouseEnter, onMouseLeave: iconBtnHover.onMouseLeave, title: '保存', disabled: addrMsg === '保存中…', onClick: saveHost }, React.createElement(MiniIcon, { d: ICON_CHECK }))) : null)),
+          React.createElement('input', { type: 'text', value: statusEditMode ? statusInput : curCfg.statusUrl, placeholder: 'http://192.168.1.100:8080', readOnly: !statusEditMode, onChange: function (e) { setStatusInput(e.target.value) }, style: Object.assign({}, addrInputStyle, { background: statusEditMode ? '#11151d' : '#0d1017', color: statusEditMode ? '#e5e9f0' : '#e5b48a', borderColor: statusEditMode ? '#f97316' : '#3d2f1f' }) }),
+          !statusEditMode ? React.createElement('button', { className: 'bi-btn', style: iconBtn, onMouseEnter: iconBtnHover.onMouseEnter, onMouseLeave: iconBtnHover.onMouseLeave, title: '编辑', onClick: function () { setStatusInput(curCfg.statusUrl); setStatusEditMode(true) } }, React.createElement(MiniIcon, { d: ICON_EDIT })) : null,
+          statusEditMode ? React.createElement('button', { className: 'bi-btn', style: iconBtn, onMouseEnter: iconBtnHover.onMouseEnter, onMouseLeave: iconBtnHover.onMouseLeave, title: '保存', disabled: addrMsg === '保存中…', onClick: saveStatus }, React.createElement(MiniIcon, { d: ICON_CHECK })) : null) : null)),
     tableArea == null ? React.createElement(React.Fragment, null,
       React.createElement('div', { className: 'bi-set-h2' }, '数据表访问开关'),
     React.createElement('table', { className: 'bi-set-table' },
