@@ -77,6 +77,26 @@ curl -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3080/    # 输出 200
 
 **卡住怎么办**：端口被占用 → 换端口 `dsh --profile web --port 3081`（后面提到的 3080 相应替换）；命令不存在 → 回到第 1 步检查 node/nvm，再重装。停止 DSH = 在该终端按 Ctrl+C（之后重启插件时要用）。
 
+### 2.1 桌面快捷方式（可选，推荐）
+
+在 WSL 内执行一条命令，即可在 Windows 桌面生成「DSH」启动与「Stop DSH」停止两个快捷方式
+（内部调用 Windows PowerShell；`wslpath -w` 把 WSL 路径转成 Windows 路径，对任何解压位置都成立）：
+
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w ~/bi-plugin/static/scripts/win/create-desktop-shortcuts.ps1)"
+```
+
+执行后桌面出现两个图标（重复执行会覆盖旧图标，幂等）：
+
+- **DSH**：双击启动 DSH Web——自动等待 http://127.0.0.1:3080 就绪后，用 DeepSeek Harness PWA 窗口打开；未装 Harness 则自动回退默认浏览器。内置锁文件防重入（另一次启动进行中会等待，超 200s 的残留锁自动清理）。
+- **Stop DSH**：一键停止 DSH Web（向 WSL 内的 dsh 发停止信号，并自动验证 3080 端口已释放）。
+
+注意：
+
+- 需在 Windows 侧执行 `powershell.exe`（在 WSL 内按上面的命令调用即可，脚本会自动定位自身目录）。
+- 若双击「DSH」弹出的是默认浏览器而非 Harness 窗口，说明这台机器没装 DeepSeek Harness——**无碍**，功能等价。
+- 两个 .bat 通过 `wsl --` 调用 WSL **默认发行版**，请确保默认发行版就是装 DSH 的那个（`wsl -l -v` 查看，需要时 `wsl --set-default <名称>`）。
+
 ## 3. 解压插件包
 
 假设压缩包在当前目录（按实际路径替换 `~/Downloads/bi-plugin-v1.0.0.tar.gz`）：

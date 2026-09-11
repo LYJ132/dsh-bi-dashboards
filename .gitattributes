@@ -1,0 +1,3 @@
+# Windows 脚本行尾约定：.bat 必须保持 CRLF（检出与 git archive 打包均一致）
+*.bat text eol=crlf
+*.ps1 text eol=crlf
