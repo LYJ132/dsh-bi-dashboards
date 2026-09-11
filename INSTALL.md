@@ -82,19 +82,19 @@ curl -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3080/    # 输出 200
 假设压缩包在当前目录（按实际路径替换 `~/Downloads/bi-plugin-v1.0.0.tar.gz`）：
 
 ```bash
-mkdir -p ~/PROGRAMS/bi-plugin
-tar -xzf ~/Downloads/bi-plugin-v1.0.0.tar.gz -C ~/PROGRAMS/bi-plugin
-ls ~/PROGRAMS/bi-plugin/
+mkdir -p ~/bi-plugin
+tar -xzf ~/Downloads/bi-plugin-v1.0.0.tar.gz -C ~/bi-plugin
+ls ~/bi-plugin/
 ```
 
 **验证点**：目录下出现 `INSTALL.md`、`README.md`、`static/`、`data-service/`、`rules/`、`web/`、`sql/` 等。
 
-> 压缩包内没有顶层目录，所以先 `mkdir` 再解压进去；解压到其他位置同理，下文以 `~/PROGRAMS/bi-plugin` 为准。
+> 压缩包内没有顶层目录，所以先 `mkdir -p` 再解压进去；`~/bi-plugin` 在 `$HOME` 下，任何机器都能创建（`mkdir -p` 保证目录不存在时自动建立），不依赖任何预存在目录。解压到其他位置同理，下文以 `~/bi-plugin` 为准。
 
 ## 4. 安装插件到 DSH
 
 ```bash
-cd ~/PROGRAMS/bi-plugin
+cd ~/bi-plugin
 bash static/scripts/install-to-dsh.sh
 ```
 
