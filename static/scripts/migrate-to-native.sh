@@ -72,10 +72,53 @@ else
   echo "[跳过] $NEW_CFG 已存在，不覆盖"
 fi
 
-# 2) 看板数据
-if [ -f "$OLD_HOST/data/bi-dashboards.json" ] && [ ! -f "$PERSIST/data/bi-dashboards.json" ]; then
-  cp "$OLD_HOST/data/bi-dashboards.json" "$PERSIST/data/bi-dashboards.json"
-  echo "[迁移] 看板数据 → $PERSIST/data/bi-dashboards.json"
+# 2) 看板数据：按旧 config 的 storeFile 定位旧 store 文件（不能只猜 data/bi-dashboards.json——
+#    老机器的 storeFile 可能指向任意相对路径），拷到持久化目录并验证
+TARGET_STORE="$PERSIST/data/bi-dashboards.json"
+if [ -f "$TARGET_STORE" ]; then
+  echo "[跳过] $TARGET_STORE 已存在，不覆盖"
+else
+  STORE_SRC="$(node -e '
+    const fs = require("fs"), path = require("path");
+    const root = process.argv[1];
+    // 旧 config 的优先级与上面 config 迁移一致：lib/config.json.migrated → lib/config.json → 包根 config.json
+    const cands = [];
+    for (const p of [root + "/lib/config.json.migrated", root + "/lib/config.json", root + "/config.json"]) {
+      let c = {}; try { c = JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { continue }
+      if (typeof c.storeFile === "string" && c.storeFile) cands.push(c.storeFile);
+    }
+    cands.push("data/bi-dashboards.json"); // 旧安装脚本的历史默认值兜底
+    const seen = new Set();
+    for (const rel of cands) {
+      if (seen.has(rel)) continue; seen.add(rel);
+      // 旧包内相对路径一律相对旧包根解析；绝对路径原样使用
+      const abs = path.isAbsolute(rel) ? rel : path.resolve(root, rel);
+      try { if (fs.statSync(abs).isFile() && fs.statSync(abs).size > 0) { console.log(abs); process.exit(0); } } catch (e) {}
+    }
+  ' "$OLD_HOST")"
+  if [ -n "$STORE_SRC" ]; then
+    cp "$STORE_SRC" "$TARGET_STORE"
+    echo "[迁移] store → $TARGET_STORE（来源 $STORE_SRC）"
+  else
+    echo ""
+    echo "  ⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠"
+    echo "  ⚠  警告：没有找到旧包的看板数据（bi-dashboards.json）！"
+    echo "  ⚠  已检查：旧包 config / lib/config.json / lib/config.json.migrated 的 storeFile 及默认 data/ 目录。"
+    echo "  ⚠  若你之前保存过看板，请手动从备份恢复，否则重启后看板会消失："
+    echo "  ⚠    ls $BACKUP/bi-dashboards-host/data/"
+    echo "  ⚠    cp <找到的 json> $TARGET_STORE"
+    echo "  ⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠"
+    echo ""
+  fi
+fi
+
+# store 文件验证：必须存在、非空、合法 JSON（缺失且本来就没有时不算失败）
+if [ -f "$TARGET_STORE" ]; then
+  if [ -s "$TARGET_STORE" ] && node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$TARGET_STORE" 2>/dev/null; then
+    echo "[验证] store 文件存在、非空且为合法 JSON ✓"
+  else
+    echo "[失败] $TARGET_STORE 为空或不是合法 JSON——看板会消失！请从 $BACKUP 手动恢复后重跑验证"
+  fi
 fi
 
 # 3) vendor echarts
