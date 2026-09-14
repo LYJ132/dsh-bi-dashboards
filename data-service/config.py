@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     db_name: str = "unmanned_supermarket"
     db_user: str = "appuser"
     db_password: str = "ChangeMe_Strong_123"
-    # 连接池上限受控，避免之前 store-ai-dashboard 泄漏 100 个 idle 连接挤爆数据库
+    # 连接池上限受控，避免历史版本（旧名包）泄漏 100 个 idle 连接挤爆数据库
     db_pool_min_size: int = 2
     db_pool_max_size: int = 10
 

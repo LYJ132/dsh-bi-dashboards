@@ -59,7 +59,7 @@ dsh --profile web        # 首次启动：自动创建 ~/.dsh/profiles/web/，We
 ## 3. 安装插件（官方 dsh plugin 通道）
 
 ```bash
-dsh plugin --profile web add github:LYJ132/bi-plugin
+dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards
 ```
 
 也可从本地路径安装（克隆/解压本仓库后）：
@@ -86,7 +86,7 @@ dsh plugin --profile web add /path/to/bi-plugin
 ```bash
 cd /path/to/bi-plugin
 bash static/scripts/migrate-to-native.sh
-dsh plugin --profile web add github:LYJ132/bi-plugin   # 或本地路径
+dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards   # 或本地路径
 ```
 
 脚本做什么（幂等）：
@@ -141,7 +141,7 @@ dsh plugin --profile web add github:LYJ132/bi-plugin   # 或本地路径
 
 ## 6. 升级与卸载
 
-- **升级**：重新执行 `dsh plugin --profile web add github:LYJ132/bi-plugin`（或新版本地路径）。用户数据在 `~/.dsh/bi-dashboards/`，**升级不会丢失配置与看板**。
+- **升级**：重新执行 `dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards`（或新版本地路径）。用户数据在 `~/.dsh/bi-dashboards/`，**升级不会丢失配置与看板**。
 - **查看已装**：`dsh plugin --profile web list`
 - **卸载插件**：`dsh plugin --profile web remove dsh-bi-dashboards`；如需彻底清空用户数据再删除 `~/.dsh/bi-dashboards/`（会连带删掉看板与配置，慎做）。
 
