@@ -207,14 +207,16 @@ function renderChartBody(chart, dashId, i) { if (chart.type === 'kpi') return Re
 function Chip(label, color, title) { return React.createElement('span', { className: 'bi-chip', title: title || '' }, React.createElement('i', { style: { background: color } }), label) }
 function SyncBar(props) {
   const [st, setSt] = React.useState(null)
+  const [probe, setProbe] = React.useState(null)
   const [nowTs, setNowTs] = React.useState(Date.now())
   const [msg, setMsg] = React.useState('')
   const [busy, setBusy] = React.useState('')
   React.useEffect(function () {
     var dead = false
     function poll() { biCall('bi.getStatus', {}).then(function (d) { if (!dead) setSt(d && d.error ? { offline: true } : d) }).catch(function () { if (!dead) setSt({ offline: true }) }) }
-    poll()
-    const a = TIMER_INTERVAL(function () { if (!dead) poll() }, 5000)
+    function ping() { biCall('bi.ping', {}).then(function (d) { if (!dead) setProbe(d || { ok: false }) }).catch(function () { if (!dead) setProbe({ ok: false }) }) }
+    poll(); ping()
+    const a = TIMER_INTERVAL(function () { if (!dead) { poll(); ping() } }, 5000)
     const b = TIMER_INTERVAL(function () { if (!dead) setNowTs(Date.now()) }, 1000)
     return function () { dead = true; if (a) a(); if (b) b() }
   }, [])
@@ -227,14 +229,15 @@ function SyncBar(props) {
       if (TIMER_TIMEOUT) TIMER_TIMEOUT(function () { setMsg('') }, 6000)
     }).catch(function () { setBusy(''); setMsg('触发失败') })
   }
-  const offline = !st || !!st.offline
+  const probeOk = probe === null ? null : !!(probe && probe.ok)
+  const offline = probeOk === null ? (!st || !!st.offline) : !probeOk
   const running = !offline && !!st.running
   const nextMs = (!offline && st && st.next_run_at) ? (new Date(st.next_run_at).getTime() - nowTs) : NaN
   const remS = isNaN(nextMs) ? 0 : Math.max(0, Math.floor(nextMs / 1000))
   const cyc = 900
   const p = running ? 1 : (!isFinite(nextMs) || nextMs <= 0 ? 0 : 1 - Math.min(1, Math.max(0, remS / cyc)))
   const mm = Math.floor(remS / 60), ss = remS % 60
-  const ringText = offline ? '离线' : running ? '同步中' : (!isFinite(nextMs) || nextMs <= 0 ? '00:00' : mm + ':' + (ss < 10 ? '0' : '') + ss)
+  const ringText = offline ? '离线' : running ? '同步中' : (!isFinite(nextMs) || nextMs <= 0 ? '在线' : mm + ':' + (ss < 10 ? '0' : '') + ss)
   const ringColor = running ? GREEN : ORANGE
   const cloud = st || {}
   const cloudOk = cloud.success !== false
@@ -545,6 +548,7 @@ function TableManagerSection(props) {
   const [freq, setFreq] = React.useState({})
   const [saved, setSaved] = React.useState('')
   const [st, setSt] = React.useState(null)
+  const [probe, setProbe] = React.useState(null)
   const [nowTs, setNowTs] = React.useState(Date.now())
   const [loginMsg, setLoginMsg] = React.useState('')
   const [feishuOpen, setFeishuOpen] = React.useState(false)
@@ -569,8 +573,9 @@ function TableManagerSection(props) {
   React.useEffect(function () {
     var dead = false
     function poll() { biCall('bi.getStatus', {}).then(function (d) { if (!dead) setSt(d && d.error ? { offline: true } : d) }).catch(function () { if (!dead) setSt({ offline: true }) }) }
-    poll()
-    const a = TIMER_INTERVAL(function () { if (!dead) poll() }, 5000)
+    function ping() { biCall('bi.ping', {}).then(function (d) { if (!dead) setProbe(d || { ok: false }) }).catch(function () { if (!dead) setProbe({ ok: false }) }) }
+    poll(); ping()
+    const a = TIMER_INTERVAL(function () { if (!dead) { poll(); ping() } }, 5000)
     const b = TIMER_INTERVAL(function () { if (!dead) setNowTs(Date.now()) }, 1000)
     return function () { dead = true; if (a) a(); if (b) b() }
   }, [])
@@ -636,14 +641,15 @@ function TableManagerSection(props) {
   const triggerLogin = function () { act('login', 'bi.triggerLogin', '浏览器已弹出，请在窗口内完成登录（手机号 → 图形码 → 短信码），成功后自动恢复同步') }
   const syncCloud = function () { act('cloud', 'bi.triggerSync', '已触发云平台同步') }
   const syncFeishu = function () { act('feishu', 'bi.triggerFeishuSync', '已触发飞书同步') }
-  const offline = !st || !!st.offline
+  const probeOk = probe === null ? null : !!(probe && probe.ok)
+  const offline = probeOk === null ? (!st || !!st.offline) : !probeOk
   const running = !offline && !!st.running
   const nextMs = (!offline && st && st.next_run_at) ? (new Date(st.next_run_at).getTime() - nowTs) : NaN
   const remS = isNaN(nextMs) ? 0 : Math.max(0, Math.floor(nextMs / 1000))
   const cyc = 900
   const p = running ? 1 : (!isFinite(nextMs) || nextMs <= 0 ? 0 : 1 - Math.min(1, Math.max(0, remS / cyc)))
   const mm = Math.floor(remS / 60), ss = remS % 60
-  const ringText = offline ? '离线' : running ? '同步中' : (!isFinite(nextMs) || nextMs <= 0 ? '00:00' : mm + ':' + (ss < 10 ? '0' : '') + ss)
+  const ringText = offline ? '离线' : running ? '同步中' : (!isFinite(nextMs) || nextMs <= 0 ? '在线' : mm + ':' + (ss < 10 ? '0' : '') + ss)
   const ringColor = running ? GREEN : ORANGE
   const login = (st && st.login) || {}
   const loginValid = login.state === 'valid'

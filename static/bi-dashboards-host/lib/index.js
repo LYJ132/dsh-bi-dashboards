@@ -435,6 +435,13 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     if (!/^https?:\/\//.test(raw)) return { ok: false, error: '地址需以 http:// 或 https:// 开头' }
     try { const r = await fetch(raw + '/api/meta/tables', { signal: AbortSignal.timeout(5000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status }; const j = await r.json(); return { ok: true, tables: (j.tables || []).length } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) } }
   }
+  biApi['bi.ping'] = async () => {
+    await cfgReady
+    const t0 = Date.now()
+    const url = String(CFG.dataApi || '').trim().replace(/\/+$/, '')
+    if (!url) return { ok: false, error: '未配置数据主机地址', ms: Date.now() - t0 }
+    try { const r = await fetch(url + '/api/meta/tables', { signal: AbortSignal.timeout(4000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status, ms: Date.now() - t0 }; return { ok: true, ms: Date.now() - t0 } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200), ms: Date.now() - t0 } }
+  }
   console.log('[bi] Phase5 Host 已加载 (static v1)')
   if (ws) ctx.effect(() => ws.register({ kind: 'exact', path: '/bi/api', handler: async (req, res) => {
     await cfgReady
