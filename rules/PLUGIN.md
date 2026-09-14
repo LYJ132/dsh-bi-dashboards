@@ -49,6 +49,14 @@
 - **验证**：node --check ×2、py_compile query.py、双方独有功能清单逐项核对无丢失、无运行时垃圾（server.pid/*.bak/data/*.venv）入库
 - **教训**：「角色」是配置不是代码；一旦发现按机器分叉代码，先收敛为一份通用实现 + 配置驱动，杜绝第二次分叉
 
+### E6：pnpm link 安装后 DSH 启动失败——外部依赖未打包未声明（2026-09-14）
+
+- **症状**：`pnpm link` 装入 dsh-bi-dashboards 后 DSH 启动即崩：`failed to apply loader entry include (cordis:include): failed to import loader entry dsh-bi-dashboards ... Cannot find package '@deepseek-ai/dsh-tools' imported from .../PROGRAMS/bi-plugin/lib/index.js`（ERR_MODULE_NOT_FOUND，boot 直接 Exit 1；早期观测到的 dsh-notification client.js 报错是同一根因的连带表象）
+- **根因**：lib/index.js 顶层 `import { defineTool } from '@deepseek-ai/dsh-tools'` 是**外部依赖**，但 package.json 未声明 dependencies、仓库无 node_modules；cordis-plugin-loader 用普通 ESM 解析导入插件入口（对 @deepseek-ai/* 无任何特殊回退），Node 从包真实路径逐级上溯找不到该包 → Entry.init 抛错 → 整个 include 应用失败、boot 中止。dsh-notification 等官方插件能跑，是因为它们的 lib 是 esbuild **全量打包产物**（零外部 import）；symlink 安装（pnpm link）进一步使 Node 沿 realpath（仓库目录）解析，profile node_modules 完全不参与，即使 profile 里有依赖也救不了
+- **修复**：仓库根（gitignored 的 node_modules/）放入 @deepseek-ai/dsh-tools 及其依赖闭包（cordis/cosmokit/schemastery/dsh-invariants/dsh-scope/dsh-llm/dsh-session/dsh-agent/dsh-code-runtime/dsh-system-prompt/dsh-user-approval，均 symlink 至 dsh 应用自带的同版本包，保证运行时与宿主一致）；重启后 DSH 正常启动
+- **验证**：boot 日志无 error/fail；`[bi] Phase5 Host 已加载 (static v1)`；curl `/plugins/dsh-notification/client.js?rev=db1e9ee79535`、`/plugins/dsh-notification/client.js`、`/plugins/dsh-bi-dashboards/client.js` 全部 200；`dsh plugin --profile web list` 两包均在
+- **教训**：本包走「源码直发」路线时，lib 内任何外部 import 必须二选一：① 像 dsh-notification 一样 esbuild 全量打包进 lib（发布形态首选）；② package.json 声明 dependencies 且保证装到包的解析上溯路径内。symlink/link 安装下 Node 按 realpath 解析，profile node_modules 不在链上；开发期可用仓库根 node_modules 兜底（与 dsh 应用版本严格一致）。「Packages: -3」pnpm 裁剪与 loader 缓存均非本因
+
 ## 开发契约速查（创造模式必读，细节见 git 历史 0098511 版 DEVELOPMENT.md）
 
 1. **声明红线**：client package.json `dsh.client.inject` 必须为 `[]`；bundle `exports.inject` 只许 `['slots']`（timer 走 window、sessions 走 ctx.get、CSS 走 injectCss）
