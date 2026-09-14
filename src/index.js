@@ -539,6 +539,12 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     if (!/^https?:\/\//.test(raw)) return { ok: false, error: '地址需以 http:// 或 https:// 开头' }
     try { const r = await fetch(raw + '/api/meta/tables', { signal: AbortSignal.timeout(5000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status }; const j = await r.json(); return { ok: true, tables: (j.tables || []).length } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) } }
   }
+  biApi['bi.testStatus'] = async (args) => {
+    const raw = String((args && args.url) || '').trim().replace(/\/+$/, '')
+    if (!/^https?:\/\//.test(raw)) return { ok: false, error: '地址需以 http:// 或 https:// 开头' }
+    const t0 = Date.now()
+    try { const r = await fetch(raw + '/status.json', { signal: AbortSignal.timeout(5000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status }; const j = await r.json(); return { ok: true, ms: Date.now() - t0, running: !!(j && j.running) } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) } }
+  }
   biApi['bi.ping'] = async () => {
     await cfgReady
     const t0 = Date.now()
