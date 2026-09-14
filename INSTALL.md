@@ -272,10 +272,10 @@ dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards   # 或本地路径
 
 **仅看板浏览端可完全跳过本节。** 想自己搭建数据主机时，需要以下组件（均只在数据主机运行）：
 
-- **data-service（:8600）**：FastAPI 数据服务，Docker 部署（根目录 `docker-compose.yml`），依赖外部 PostgreSQL（biz-postgres，库名 `unmanned_supermarket`）与外部网络 `unmanned-store_default`；环境变量参考 `data-service/.env.example`，表结构见 `sql/README.md`
+- **data-service（:8600）**：FastAPI 数据服务，Docker 部署（`docs/docker-windows/docker-compose.yml`），依赖外部 PostgreSQL（biz-postgres，库名 `unmanned_supermarket`）与外部网络 `unmanned-store_default`；环境变量参考 `data-service/.env.example`，表结构见 `sql/README.md`
 - **状态服务器（:8080，可选）**：`bash web/start.sh`（python3，绑定 0.0.0.0）
 - **爬虫同步**：云平台/飞书 → PG 的数据同步只在数据主机运行
 
-端口自定义：8600 改 `docker-compose.yml` 端口映射，8080 改 `web/start.sh` 里的参数，改完同步更新数据主机自己的 config.json（或在其设置页地址卡片改），展示地址自动跟随。
+端口自定义：8600 改 `docs/docker-windows/docker-compose.yml` 端口映射，8080 改 `web/start.sh` 里的参数，改完同步更新数据主机自己的 config.json（或在其设置页地址卡片改），展示地址自动跟随。
 
 详见仓库内 `README.md`（目录结构表）与各 Docker 指南。
