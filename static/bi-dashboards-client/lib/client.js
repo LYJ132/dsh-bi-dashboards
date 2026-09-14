@@ -207,14 +207,16 @@ function renderChartBody(chart, dashId, i) { if (chart.type === 'kpi') return Re
 function Chip(label, color, title) { return React.createElement('span', { className: 'bi-chip', title: title || '' }, React.createElement('i', { style: { background: color } }), label) }
 function SyncBar(props) {
   const [st, setSt] = React.useState(null)
+  const [probe, setProbe] = React.useState(null)
   const [nowTs, setNowTs] = React.useState(Date.now())
   const [msg, setMsg] = React.useState('')
   const [busy, setBusy] = React.useState('')
   React.useEffect(function () {
     var dead = false
     function poll() { biCall('bi.getStatus', {}).then(function (d) { if (!dead) setSt(d && d.error ? { offline: true } : d) }).catch(function () { if (!dead) setSt({ offline: true }) }) }
-    poll()
-    const a = TIMER_INTERVAL(function () { if (!dead) poll() }, 5000)
+    function ping() { biCall('bi.ping', {}).then(function (d) { if (!dead) setProbe(d || { ok: false }) }).catch(function () { if (!dead) setProbe({ ok: false }) }) }
+    poll(); ping()
+    const a = TIMER_INTERVAL(function () { if (!dead) { poll(); ping() } }, 5000)
     const b = TIMER_INTERVAL(function () { if (!dead) setNowTs(Date.now()) }, 1000)
     return function () { dead = true; if (a) a(); if (b) b() }
   }, [])
@@ -227,31 +229,41 @@ function SyncBar(props) {
       if (TIMER_TIMEOUT) TIMER_TIMEOUT(function () { setMsg('') }, 6000)
     }).catch(function () { setBusy(''); setMsg('触发失败') })
   }
-  const offline = !st || !!st.offline
-  const running = !offline && !!st.running
-  const nextMs = (!offline && st && st.next_run_at) ? (new Date(st.next_run_at).getTime() - nowTs) : NaN
+  const probeOk = probe === null ? null : !!(probe && probe.ok)
+  const offline = probeOk === null ? (!st || !!st.offline) : !probeOk
+  const data = (st && st.data) || { ok: !offline, ms: null }
+  const dataOk = probeOk === null ? !!data.ok : probeOk
+  const dataMs = (probe && probe.ms != null) ? probe.ms : (data.ok ? data.ms : null)
+  const sync = (st && st.sync) || (st && st.data === undefined && st.running !== undefined ? st : null)
+  const stale = !!(sync && sync.stale)
+  const running = !offline && !!(sync && sync.running)
+  const nextMs = (sync && sync.next_run_at) ? (new Date(sync.next_run_at).getTime() - nowTs) : NaN
   const remS = isNaN(nextMs) ? 0 : Math.max(0, Math.floor(nextMs / 1000))
-  const cyc = 900
+  const cyc = (sync && sync.crawl_interval_minutes ? sync.crawl_interval_minutes : 15) * 60
   const p = running ? 1 : (!isFinite(nextMs) || nextMs <= 0 ? 0 : 1 - Math.min(1, Math.max(0, remS / cyc)))
   const mm = Math.floor(remS / 60), ss = remS % 60
-  const ringText = offline ? '离线' : running ? '同步中' : (!isFinite(nextMs) || nextMs <= 0 ? '00:00' : mm + ':' + (ss < 10 ? '0' : '') + ss)
-  const ringColor = running ? GREEN : ORANGE
-  const cloud = st || {}
+  const ringText = offline ? '离线' : stale ? '疑似停摆' : running ? '同步中' : (!isFinite(nextMs) || nextMs <= 0 ? '00:00' : mm + ':' + (ss < 10 ? '0' : '') + ss)
+  const ringColor = stale ? RED : (running ? GREEN : ORANGE)
+  const cloud = sync || st || {}
   const cloudOk = cloud.success !== false
   const cloudVal = offline ? '离线' : (running ? '进行中' : (cloud.success === true ? '成功 ' + fmtTs(cloud.end_time) : (cloud.success === false ? '失败' : '-')))
   const feishuDefs = [['shelf_sync', '货架'], ['standard_qty_sync', '陈列'], ['procurement_sync', '采购']]
-  const feishuStats = feishuDefs.map(function (d) { return st ? st[d[0]] : null })
+  const feishuStats = feishuDefs.map(function (d) { return sync ? sync[d[0]] : null })
   const anyFail = feishuStats.some(function (s) { return s && s.success === false })
   const feishuVal = offline ? '离线' : (anyFail ? '异常' : '正常')
   return React.createElement('div', { className: 'bi-sync-bar' },
     React.createElement(BigRing, { p: p, color: ringColor, text: ringText, size: 56, font: 12 }),
     React.createElement('div', { className: 'bi-pill' },
-      React.createElement('span', { className: 'bi-dot', style: { background: offline ? GRAY : (running ? GREEN : (cloudOk ? GREEN : RED)) } }),
+      React.createElement('span', { className: 'bi-dot', style: { background: dataOk ? GREEN : RED } }),
+      React.createElement('span', null, '数据服务'),
+      React.createElement('span', { className: 'bi-status-val' }, dataOk ? (dataMs != null ? dataMs + 'ms' : '已连接') : '离线')),
+    React.createElement('div', { className: 'bi-pill' },
+      React.createElement('span', { className: 'bi-dot', style: { background: offline ? GRAY : (stale ? RED : (running ? GREEN : (cloudOk ? GREEN : RED))) } }),
       React.createElement('span', null, '云平台'),
       React.createElement('span', { className: 'bi-status-val' }, cloudVal),
       React.createElement(SyncRoundBtn, { title: '手动同步', disabled: busy === 'cloud', onClick: function () { act('cloud', 'bi.triggerSync', '已触发云平台同步') } })),
     React.createElement('div', { className: 'bi-pill' },
-      React.createElement('span', { className: 'bi-dot', style: { background: offline ? GRAY : (anyFail ? RED : GREEN) } }),
+      React.createElement('span', { className: 'bi-dot', style: { background: offline ? GRAY : ((stale || anyFail) ? RED : GREEN) } }),
       React.createElement('span', null, '飞书'),
       React.createElement('span', { className: 'bi-status-val' }, feishuVal),
       React.createElement(SyncRoundBtn, { title: '手动同步（货架/陈列/采购）', disabled: busy === 'feishu', onClick: function () { act('feishu', 'bi.triggerFeishuSync', '已触发飞书同步') } })),
@@ -545,6 +557,7 @@ function TableManagerSection(props) {
   const [freq, setFreq] = React.useState({})
   const [saved, setSaved] = React.useState('')
   const [st, setSt] = React.useState(null)
+  const [probe, setProbe] = React.useState(null)
   const [nowTs, setNowTs] = React.useState(Date.now())
   const [loginMsg, setLoginMsg] = React.useState('')
   const [feishuOpen, setFeishuOpen] = React.useState(false)
@@ -569,8 +582,9 @@ function TableManagerSection(props) {
   React.useEffect(function () {
     var dead = false
     function poll() { biCall('bi.getStatus', {}).then(function (d) { if (!dead) setSt(d && d.error ? { offline: true } : d) }).catch(function () { if (!dead) setSt({ offline: true }) }) }
-    poll()
-    const a = TIMER_INTERVAL(function () { if (!dead) poll() }, 5000)
+    function ping() { biCall('bi.ping', {}).then(function (d) { if (!dead) setProbe(d || { ok: false }) }).catch(function () { if (!dead) setProbe({ ok: false }) }) }
+    poll(); ping()
+    const a = TIMER_INTERVAL(function () { if (!dead) { poll(); ping() } }, 5000)
     const b = TIMER_INTERVAL(function () { if (!dead) setNowTs(Date.now()) }, 1000)
     return function () { dead = true; if (a) a(); if (b) b() }
   }, [])
@@ -636,14 +650,15 @@ function TableManagerSection(props) {
   const triggerLogin = function () { act('login', 'bi.triggerLogin', '浏览器已弹出，请在窗口内完成登录（手机号 → 图形码 → 短信码），成功后自动恢复同步') }
   const syncCloud = function () { act('cloud', 'bi.triggerSync', '已触发云平台同步') }
   const syncFeishu = function () { act('feishu', 'bi.triggerFeishuSync', '已触发飞书同步') }
-  const offline = !st || !!st.offline
+  const probeOk = probe === null ? null : !!(probe && probe.ok)
+  const offline = probeOk === null ? (!st || !!st.offline) : !probeOk
   const running = !offline && !!st.running
   const nextMs = (!offline && st && st.next_run_at) ? (new Date(st.next_run_at).getTime() - nowTs) : NaN
   const remS = isNaN(nextMs) ? 0 : Math.max(0, Math.floor(nextMs / 1000))
   const cyc = 900
   const p = running ? 1 : (!isFinite(nextMs) || nextMs <= 0 ? 0 : 1 - Math.min(1, Math.max(0, remS / cyc)))
   const mm = Math.floor(remS / 60), ss = remS % 60
-  const ringText = offline ? '离线' : running ? '同步中' : (!isFinite(nextMs) || nextMs <= 0 ? '00:00' : mm + ':' + (ss < 10 ? '0' : '') + ss)
+  const ringText = offline ? '离线' : running ? '同步中' : (!isFinite(nextMs) || nextMs <= 0 ? '在线' : mm + ':' + (ss < 10 ? '0' : '') + ss)
   const ringColor = running ? GREEN : ORANGE
   const login = (st && st.login) || {}
   const loginValid = login.state === 'valid'

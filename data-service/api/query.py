@@ -34,7 +34,8 @@ router = APIRouter(prefix="/api/query", tags=["query"])
 # 候选表清单（public 业务表 + 临期处置视图）。实际可查询哪些由设置页"白名单开关"动态决定
 # 2026-09-09: 移除 alert_subscriber/replenish_subscribe(订阅已飞书化)/shelf(不存在),新增 v_procurement_disposition
 ALL_TABLES = {
-    "category_dim", "date_dim", "forecast_results",
+    "category_dim", "date_dim", "forecast_results", "forecast_monthly", "forecast_accuracy",
+    "forecast_history",
     "inventory_total", "n8n_operation_log", "order_detail_raw",
     "procurement_management", "product_main", "replenish_log",
     "shelf_product_rel", "store_info",
