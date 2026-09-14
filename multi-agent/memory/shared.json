@@ -14,6 +14,15 @@
       "fix": "仓库根（gitignored）node_modules/@deepseek-ai 放入 dsh-tools 依赖闭包（symlink 至 dsh 应用自带同版本包）；重启后 DSH 全量加载。长期建议：发布形态应 esbuild 全量打包 lib，或在 package.json 声明 dependencies。",
       "verification": "boot 无错误、[bi] Phase5 已加载、/plugins/dsh-notification/client.js?rev=db1e9ee79535 与 /plugins/dsh-bi-dashboards/client.js 均 200、dsh plugin list 两包均在",
       "evidence": "/tmp/dsh-repro.log（崩溃栈）、/tmp/dsh-repro2.log（健康 boot）"
+    },
+    {
+      "id": "impl-20260914-19",
+      "date": "2026-09-14",
+      "title": "数据主机部署 8 大坑与预防：doctor.sh 体检脚本 + INSTALL.md 常见报错对照表 + migrate 脚本补 store 迁移",
+      "root_cause": "当日数据主机部署连环踩坑：(1) github.com 被解析到 127.0.0.1（DNS 劫持/hosts 残留），曾误判为证书问题白装 ca-certificates；(2) ERR_PNPM_IGNORED_BUILDS——allowBuilds 未放行 @deepseek-ai/dsh-subprocess-local、koffi、node-pty、protobufjs（all:true 可兜底）；(3) profile cordis.patch.yml 被整段抄了旧包补丁，出现 duplicate loader entry id（profile 补丁与包自带 cordis.patch.yml 同 id）+ 指向已删包的悬空 insert；(4) migrate-to-native.sh 只迁了 config+vendor 没迁 store（旧 config 的 storeFile 可能指向任意相对路径，脚本只猜默认 data/bi-dashboards.json），重启后看板全部消失，用户只能手工拷 bi-dashboards.json。",
+      "fix": "预防三件套（feature/install-doctor）：static/scripts/doctor.sh 只读体检 7 项（node>=18、dsh CLI、getent+curl 8s 区分 DNS劫持/证书/网络不通、profile 存在性、allowBuilds 覆盖四包、补丁重复 id/悬空 insert 文件:行号配对报告、持久化目录 config/vendor/store 校验），致命项全过才退出 0 并给「可安装」结论；migrate-to-native.sh 迁移时按 lib/config.json.migrated→lib/config.json→包根 config.json 读 storeFile、相对旧包根解析、目标不存在才拷贝并验证存在+非空+合法 JSON，找不到时响铃级警告；INSTALL.md 新增「三行上手」与第 8 章「常见报错对照表」（8 坑各配症状/一句原因/可粘贴修复）。",
+      "verification": "bash -n 双脚本通过；doctor.sh 本机全致命项通过（结论可安装，唯一警告为新装无 store 属正常）；沙箱验证 dup id/悬空 insert/非法 JSON store 均正确报失败；migrate 脚本沙箱验证 store 按旧 storeFile 找到并拷贝+验证、幂等、无 store 时打印响铃警告。",
+      "evidence": "/tmp/migtest（迁移成功案例）、/tmp/migtest2（无 store 警告案例）、/tmp/doctortest（doctor 失败路径）"
     }
   ],
   "task_patterns": {},

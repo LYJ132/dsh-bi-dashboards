@@ -8,6 +8,19 @@
 > **执行者请按顺序执行**，每一步都有「验证点」；卡住时先查第 7 节「故障排查」。
 > 文中所有命令均在本插件的开发验证环境（Ubuntu 22.04 / WSL2 / Node v22）验证。
 
+## 三行上手（给非技术用户）
+
+不关心原理？在 WSL 终端里照抄三行，逐行执行：
+
+```bash
+bash static/scripts/doctor.sh                                    # 1. 体检：全部 [通过] 再继续（有 [失败] 按提示修）
+dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards     # 2. 装插件
+# 3. 重启 DSH（运行 dsh 的终端 Ctrl+C，再 dsh --profile web），浏览器 Ctrl+F5
+```
+
+第 1 步若提示「需先修复」，把输出里每条 [失败] 下方的「修复：」命令照抄执行，再重跑体检直到通过。
+装完后看板是空的属正常——在 DSH 对话框里让 AI 生成看板（见第 5 节）。
+
 ## 0. 你将部署什么（架构一图流）
 
 ```
@@ -161,7 +174,101 @@ dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards   # 或本地路径
 | `dsh` 命令不存在 | node/nvm 没装好或没 `source ~/.bashrc`；`npm install -g @deepseek-ai/dsh` 重装 |
 | 想换持久化目录位置 | 设环境变量 `BI_DASHBOARDS_HOME=/新路径` 后重启 DSH（目录结构需与原目录一致，或直接整体拷贝过去） |
 
-## 8. 数据主机侧（可选：对方想自己当数据主机时才需要）
+## 8. 常见报错对照表（2026-09-14 实际部署事故沉淀）
+
+> 下面 8 条全部来自真实安装事故。装之前先跑 `bash static/scripts/doctor.sh`，其中 1/2/3/6 会提前替你查到这里的大多数坑。
+
+### 8.1 github.com 解析到 127.0.0.1
+
+- **症状**：`dsh plugin add github:...` 报连接失败 / `getent hosts github.com` 输出 `127.0.0.1`；换 DNS、重装系统包都无效。
+- **原因**：DNS 层劫持或 `/etc/hosts` 里残留了把 github.com 指到本机的映射（与证书无关，别去重装 ca-certificates 走弯路）。
+- **修复**：
+  ```bash
+  getent hosts github.com                # 先确认：输出 127.0.0.1 即中招
+  grep -n github /etc/hosts              # 有映射行就 sudo 编辑删掉
+  # /etc/hosts 干净仍被劫持 → 路由器/运营商 DNS 问题，换 DNS 或开代理 TUN 模式：
+  # 例如 sudo 编辑 /etc/resolv.conf 写入 nameserver 223.5.5.5
+  ```
+
+### 8.2 证书验证失败（curl 报 certificate / SSL）
+
+- **症状**：`curl https://github.com` 报 `certificate verify failed` 之类的证书错误。
+- **原因**：系统 CA 证书过期/缺失（少数情况是系统时间不对）。
+- **修复**：
+  ```bash
+  date                                   # 时间不对先校时
+  sudo apt-get update && sudo apt-get install --reinstall ca-certificates
+  ```
+  > 注意：先确认不是 8.1 的 DNS 劫持（DNS 被劫持时也会伪装成证书错误）——`getent hosts github.com` 不是 127.0.0.1 再走本条。
+
+### 8.3 ERR_PNPM_IGNORED_BUILDS（依赖构建被拦截）
+
+- **症状**：安装/启动 DSH 时报 `ERR_PNPM_IGNORED_BUILDS`，提示 ignored build scripts，插件加载失败或功能残缺。
+- **原因**：pnpm 默认拦截依赖的原生构建，`@deepseek-ai/dsh-subprocess-local`、`koffi`、`node-pty`、`protobufjs` 这几个包没被放行。
+- **修复**：把下面整块并入 `~/.dsh/profiles/web/pnpm-workspace.yaml`（已有 `allowBuilds:` 段就把键并进去，没有就整块追加到文件末尾），然后重跑安装：
+  ```yaml
+  allowBuilds:
+    '@deepseek-ai/dsh-subprocess-local': true
+    koffi: true
+    node-pty: true
+    protobufjs: true
+    all: true
+  ```
+
+### 8.4 duplicate loader entry id（挂载项 id 重复）
+
+- **症状**：DSH 启动报 `duplicate loader entry` / `failed to import loader entry <id>`，插件加载不出来。
+- **原因**：profile 的 `~/.dsh/profiles/web/cordis.patch.yml` 里手写/残留了一条 insert，而它的 id 与某个包**自带**的 `cordis.patch.yml` 里的 id 相同（典型：把旧包的补丁整段抄进了 profile 补丁，新版单包又由 bundle patch 自动挂载），同一 id 挂了两次。
+- **修复**：删除 profile 补丁里的重复块，只留包自带的：
+  ```bash
+  cat ~/.dsh/profiles/web/cordis.patch.yml     # 看有哪些 id
+  # 用编辑器删掉与包内 cordis.patch.yml 重复的那条 insert（profile 补丁为空时写成 []）
+  dsh --profile web                            # 重启验证
+  ```
+
+### 8.5 insert 指向不存在的包（悬空 insert）
+
+- **症状**：启动报 `failed to import loader entry <包名>: Cannot find package ...`，但那个包根本没装。
+- **原因**：profile 的 cordis.patch.yml 里残留着已卸载/已改名包的 insert 块（典型：旧双包删了，补丁块没删干净）。
+- **修复**：
+  ```bash
+  ls ~/.dsh/profiles/web/node_modules/<报错的包名>   # 确认目录确实不存在
+  # 编辑 ~/.dsh/profiles/web/cordis.patch.yml，整块删掉指向该包的 insert（含 "- insert:" 到下一条目之间）
+  ```
+
+### 8.6 sharp 提示其它平台下载/预编译警告
+
+- **症状**：安装过程中刷出 sharp 在非当前平台（如 linux-x64 之外的 prebuilt）下载失败或跳过的警告。
+- **原因**：sharp 的可选平台二进制按需下载，本机用不到的平台下载失败无影响。
+- **修复**：**可忽略，无需处理**。只要安装最终成功、DSH 能启动即可。
+
+### 8.7 remove 报 no such dependency
+
+- **症状**：`dsh plugin remove <包名>` 时报 `no such dependency` 之类错误，卸不掉。
+- **原因**：包已在 node_modules 里被删但元数据还在（或反之），remove 流程找不到它要删的东西。
+- **修复**：**可跳过**。目标已不存在就是目的已达；继续装新版即可：
+  ```bash
+  dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards
+  ```
+
+### 8.8 图表全部消失（store 看板数据文件丢失）
+
+- **症状**：重启/迁移后「我的看板」空了，之前保存的图表全没了；`~/.dsh/bi-dashboards/data/` 下没有 `bi-dashboards.json`。
+- **原因**：看板数据存在包外持久化文件 `~/.dsh/bi-dashboards/data/bi-dashboards.json`（由旧 config 的 `storeFile` 指定，老机器可能指向别的路径）。迁移/重装时该文件没被搬过来——只迁了 config 和 vendor 不够。
+- **修复**：
+  ```bash
+  # 1) 找旧数据：迁移备份目录里通常有
+  ls ~/.dsh/bi-dashboards/backup-*/bi-dashboards-host/data/
+  # 2) 拷回持久化目录（把 <backup> 换成实际的 backup-日期 目录）
+  cp ~/.dsh/bi-dashboards/<backup>/bi-dashboards-host/data/bi-dashboards.json \
+     ~/.dsh/bi-dashboards/data/bi-dashboards.json
+  # 3) 验证是合法 JSON 后重启 DSH
+  node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log("OK")' \
+     ~/.dsh/bi-dashboards/data/bi-dashboards.json
+  ```
+  旧机器请改用 `static/scripts/migrate-to-native.sh`（新版已含 store 定位、拷贝与验证逻辑，会自动按旧 config 的 storeFile 找数据）。
+
+## 9. 数据主机侧（可选：对方想自己当数据主机时才需要）
 
 **仅看板浏览端可完全跳过本节。** 想自己搭建数据主机时，需要以下组件（均只在数据主机运行）：
 
