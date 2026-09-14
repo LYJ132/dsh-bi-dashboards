@@ -33,6 +33,22 @@
 - **验证**：node --check ×2、RPC 方法对齐（client 调用 ⊆ host biApi）、ASI 扫描零残留、curl 全链路（echarts 200 / getLocalAddresses 正确枚举与 isDataHost 判定 / testConnection 24 表 / setConfig 落盘保持相对路径）、迁移逻辑实测
 - **教训**：「bundle 即源码」的静态插件里，包内相对定位必须显式核对 import.meta.url 的实际解析位置；安装脚本与运行时读取路径要有一致性测试，配置写错位置比没有配置更难排查（表现为"改了没反应"）；配置文件里绝不应出现机器相关绝对路径，相对化是跨机即用的前提
 
+### E4：同步环冻结 + 同步停摆两天（2026-09-12）
+
+- **症状**：看板顶部倒计时环卡死 00:00；云平台增量同步自 9/10 晚起 2 天未跑；状态条离线（8080 死于机器重启）
+- **根因**：三层叠加 —— ① 文件夹重组后爬虫容器 bind mount 失联（内核挂载仍指旧目录 inode，容器里的 /opt/Crawler 只剩 logs/，controller.py「消失」→ 退出码 2 崩溃循环，日志在容器侧看不到）；② 爬虫镜像缺 `holidays` 库（代码挂载是新的、镜像旧，修好挂载后云同步仍 FATAL）；③ 机器重启后 docker 5432 转发失效（宿主机连 localhost:5432 被断，server.py 的 /run、/runfeishu 宿主触发路径全挂）
+- **修复**：`docker restart crawler`（挂载按路径重绑）+ 容器内 `pip install holidays` + `docker restart biz-postgres`（5432 转发重建）；web/start.sh 改 PID 文件管理 + @reboot crontab 自启（防重启后 8080 再离线）
+- **验证**：sync_meta.last_incr_sync 更新至当日、status.json success:true 28.6s、getStatus next_run_at 每轮刷新、宿主机直连 localhost:5432 OK、8600 200
+- **教训**：宿主机目录移动/重建后，引用它的容器 bind mount 不会自动跟随——`docker restart` 该容器即重绑；「调度没跑」先看容器内 controller 自身日志（/opt/Crawler/logs/controller.log），supervisor 的退出码循环会把真实报错吞在容器里；机器重启后必查：8080（crontab 已自启）、docker 容器 Up 时长是否与 boot 时间匹配
+
+### E5：双机分叉副本合并为一份通用插件包（2026-09-14）
+
+- **症状**：数据主机与目标机两份副本各自迭代分叉（TEMP 副本多出预测数据面/停摆检测/PID 启动脚本，主副本多出配置热更/服务地址卡片/离线探测），无法互收
+- **根因**：早期按"机器角色"分两套包，数据主机一套、目标机一套；角色差异其实只由 config.json 的 dataApi/statusUrl 指向决定，代码层本无差异
+- **修复**：合并为 ONE 通用插件包——同一份代码部署在任意机器，角色纯由 config.json 决定（数据主机把 dataApi 填本机地址，目标机填数据主机地址）；按文件逐一移植 TEMP 独有改动（query.py 预测白名单、sql/views_forecast_zh.sql、NAME_MAP_ZH 预测表/字段、getStatus 停摆语义、start.sh PID 管理、PLUGIN.md 事故条目），主副本版本为基底不回退
+- **验证**：node --check ×2、py_compile query.py、双方独有功能清单逐项核对无丢失、无运行时垃圾（server.pid/*.bak/data/*.venv）入库
+- **教训**：「角色」是配置不是代码；一旦发现按机器分叉代码，先收敛为一份通用实现 + 配置驱动，杜绝第二次分叉
+
 ## 开发契约速查（创造模式必读，细节见 git 历史 0098511 版 DEVELOPMENT.md）
 
 1. **声明红线**：client package.json `dsh.client.inject` 必须为 `[]`；bundle `exports.inject` 只许 `['slots']`（timer 走 window、sessions 走 ctx.get、CSS 走 injectCss）
