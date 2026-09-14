@@ -1,7 +1,7 @@
 {
   "name": "dsh-bi-dashboards",
   "description": "无人超市 AI BI 插件 — 单包官方形态（Node 半部：工具 + systemPrompt + bi.* HTTP API + echarts 路由；Client 半部：conversation.view「我的看板」+ dsh-ui 围栏渲染）",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
