@@ -22,7 +22,7 @@ DSH profile 级全局静态插件：提供「我的看板」视图标签、看�
 | `rules/PLUGIN.md` | **创造模式规范 + 经验账本**：开发契约速查 + E 序号经验条目 | 改插件代码前必读 |
 | `static/` | 部署包（bundle 即源码）：bi-dashboards-host / bi-dashboards-client / vendor | 插件本体 |
 | `data/` | 运行时数据 bi-dashboards.json（gitignore，不入库） | host 读写 |
-| `data-service/` | 数据服务（FastAPI :8600，白名单/MCP），根 docker-compose.yml 编排 | 全部数据工具 |
+| `data-service/` | 数据服务（FastAPI :8600，白名单/MCP），`docs/docker-windows/docker-compose.yml` 编排 | 全部数据工具 |
 | `web/` | 状态服务器（:8080 status.json + 手动同步通道），crawler 容器写入状态 | SyncBar 状态源 |
 | `sql/` | PG DDL/迁移（bi_plugin schema 约定） | L1/L2 场景 |
 

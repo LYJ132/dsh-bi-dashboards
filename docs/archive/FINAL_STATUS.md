@@ -73,9 +73,9 @@ docker info | Select-String "Registry Mirrors"
 | bi-plugin 配置 | `~/.dsh/profiles/web/node_modules/bi-dashboards-host/config.json` |
 | DSH 挂载配置 | `~/.dsh/profiles/web/cordis.patch.yml` |
 | Docker 镜像配置 | `C:\ProgramData\docker\config\daemon.json` |
-| 安装指南 | `bi-plugin/安装完成指南.md` |
-| 镜像配置指南 | `bi-plugin/Docker镜像配置指南.md` |
-| 配置脚本 | `bi-plugin/setup-docker-mirrors.sh` |
+| 安装指南 | `安装完成指南.md` |
+| 镜像配置指南 | `../docker-windows/Docker镜像配置指南.md` |
+| 配置脚本 | `../docker-windows/setup-docker-mirrors.sh` |
 
 ## 🎯 下一步
 
