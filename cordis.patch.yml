@@ -1,0 +1,4 @@
+# dsh-bi-dashboards bundle：单包双半部，向组合插入唯一挂载项（替代旧 install-to-dsh.sh 追加的双条目块）
+- insert:
+    - id: dsh-bi-dashboards
+      name: dsh-bi-dashboards

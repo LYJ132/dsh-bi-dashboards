@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# 【已废弃 · DEPRECATED】本脚本为 v1.0.0 时代的旧安装方式（拷贝双包进 profile + 手写挂载块）。
+# 新版（v1.1.0 起）插件为官方单包形态 dsh-bi-dashboards，请使用：
+#   dsh plugin --profile web add github:LYJ132/bi-plugin
+# 旧机器迁移：bash static/scripts/migrate-to-native.sh
+# 保留本脚本仅供历史参考。
+#
 # 无人超市 AI BI 插件 · 一键安装到本机 DSH（在【目标机】上执行）
 # 用法：
 #   bash static/scripts/install-to-dsh.sh                          # 数据主机与本机同一局域网时，之后再改 config.json
