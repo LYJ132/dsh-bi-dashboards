@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Build dsh-bi-dashboards: bundle src/index.js (Node half) into a fully
-// self-contained lib/index.js so a fresh `dsh plugin add github:LYJ132/bi-plugin`
+// self-contained lib/index.js so a fresh `dsh plugin add github:LYJ132/dsh-bi-dashboards`
 // boots with zero external bare imports (same shape as dsh-notification).
 // lib/client.js is already self-contained (DSH ModuleLoader factory, `react`
 // provided by the host) and is left as-is.
