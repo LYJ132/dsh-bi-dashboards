@@ -278,15 +278,22 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
       let st = null
       try { const t = await callApi(ctx, 'GET', CFG.statusUrl + '/status.json', undefined, 5000); const j = JSON.parse(t); if (j && typeof j === 'object' && ('running' in j || 'end_time' in j)) st = j } catch (e) {}
       if (st) {
+        // 倒计时环：优先从爬虫配置取 interval/last_run；crawlConfigFile 为空（如数据主机部署）
+        // 时回退到默认 15 分钟 + status.json 的 end_time 推算 next_run_at，保证任意部署都能画出倒计时弧。
         try {
+          let interval = 15
+          let last = null
           if (CFG.crawlConfigFile) {
-            const t2 = await fsv.resolve(CFG.crawlConfigFile); const cfg = JSON.parse(await fsv.readText(t2))
-            const pc = (cfg.pipelines || {}).cloud || {}
-            const interval = Math.max(1, parseInt(pc.interval_minutes, 10) || 15)
-            const last = (cfg.last_run || {}).cloud
-            if (last) { st.next_run_at = new Date(new Date(last).getTime() + interval * 60000).toISOString() }
-            st.crawl_interval_minutes = interval
+            try {
+              const t2 = await fsv.resolve(CFG.crawlConfigFile); const cfg = JSON.parse(await fsv.readText(t2))
+              const pc = (cfg.pipelines || {}).cloud || {}
+              interval = Math.max(1, parseInt(pc.interval_minutes, 10) || 15)
+              last = (cfg.last_run || {}).cloud || null
+            } catch (e2) {}
           }
+          if (!last) last = st.end_time || null
+          if (last) { st.next_run_at = new Date(new Date(last).getTime() + interval * 60000).toISOString() }
+          st.crawl_interval_minutes = interval
         } catch (e) {}
         try { const iv = ((st.crawl_interval_minutes || 15) * 2) * 60000; const end = st.end_time ? new Date(st.end_time).getTime() : 0; if (!end || Date.now() - end > iv) st.stale = true } catch (e) {}
         sync = st
@@ -531,6 +538,12 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     const raw = String((args && args.url) || '').trim().replace(/\/+$/, '')
     if (!/^https?:\/\//.test(raw)) return { ok: false, error: '地址需以 http:// 或 https:// 开头' }
     try { const r = await fetch(raw + '/api/meta/tables', { signal: AbortSignal.timeout(5000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status }; const j = await r.json(); return { ok: true, tables: (j.tables || []).length } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) } }
+  }
+  biApi['bi.testStatus'] = async (args) => {
+    const raw = String((args && args.url) || '').trim().replace(/\/+$/, '')
+    if (!/^https?:\/\//.test(raw)) return { ok: false, error: '地址需以 http:// 或 https:// 开头' }
+    const t0 = Date.now()
+    try { const r = await fetch(raw + '/status.json', { signal: AbortSignal.timeout(5000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status }; const j = await r.json(); return { ok: true, ms: Date.now() - t0, running: !!(j && j.running) } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) } }
   }
   biApi['bi.ping'] = async () => {
     await cfgReady
