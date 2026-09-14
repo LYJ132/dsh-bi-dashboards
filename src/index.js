@@ -278,15 +278,22 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
       let st = null
       try { const t = await callApi(ctx, 'GET', CFG.statusUrl + '/status.json', undefined, 5000); const j = JSON.parse(t); if (j && typeof j === 'object' && ('running' in j || 'end_time' in j)) st = j } catch (e) {}
       if (st) {
+        // 倒计时环：优先从爬虫配置取 interval/last_run；crawlConfigFile 为空（如数据主机部署）
+        // 时回退到默认 15 分钟 + status.json 的 end_time 推算 next_run_at，保证任意部署都能画出倒计时弧。
         try {
+          let interval = 15
+          let last = null
           if (CFG.crawlConfigFile) {
-            const t2 = await fsv.resolve(CFG.crawlConfigFile); const cfg = JSON.parse(await fsv.readText(t2))
-            const pc = (cfg.pipelines || {}).cloud || {}
-            const interval = Math.max(1, parseInt(pc.interval_minutes, 10) || 15)
-            const last = (cfg.last_run || {}).cloud
-            if (last) { st.next_run_at = new Date(new Date(last).getTime() + interval * 60000).toISOString() }
-            st.crawl_interval_minutes = interval
+            try {
+              const t2 = await fsv.resolve(CFG.crawlConfigFile); const cfg = JSON.parse(await fsv.readText(t2))
+              const pc = (cfg.pipelines || {}).cloud || {}
+              interval = Math.max(1, parseInt(pc.interval_minutes, 10) || 15)
+              last = (cfg.last_run || {}).cloud || null
+            } catch (e2) {}
           }
+          if (!last) last = st.end_time || null
+          if (last) { st.next_run_at = new Date(new Date(last).getTime() + interval * 60000).toISOString() }
+          st.crawl_interval_minutes = interval
         } catch (e) {}
         try { const iv = ((st.crawl_interval_minutes || 15) * 2) * 60000; const end = st.end_time ? new Date(st.end_time).getTime() : 0; if (!end || Date.now() - end > iv) st.stale = true } catch (e) {}
         sync = st
