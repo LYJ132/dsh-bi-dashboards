@@ -5,7 +5,17 @@
     "file_by_file_port_list": "TEMP(/mnt/d/Desktop/TEMP/bi-plugin) 独有改动已全部收编：data-service/api/query.py 白名单+forecast_monthly/accuracy/history；sql/views_forecast_zh.sql（整文件）；index.js NAME_MAP_ZH 预测3表+采购备份+15字段中文翻译、bi.getStatus 数据探活+停摆语义；client.js SyncBar stale/cyc/数据服务时延；web/start.sh PID 文件管理；rules/PLUGIN.md E4(2026-09-12 停摆事故)+E5(合并决策)。install-to-dsh.sh/INSTALL.md 保持当前仓版本（更新更强）。",
     "dsh_native_package": "v1.1.0 官方单包形态（feature/dsh-native）：仓库根即一个 npm 包 dsh-bi-dashboards —— lib/index.js（Node 半部）+ lib/client.js（Client 半部）同包，package.json 含 exports（. / ./client / ./cordis.patch.yml / ./package.json）、dsh.bundle.patch=./cordis.patch.yml、dsh.client={platform:web, inject:[]}（自旧 client 包原样保留）、files=[lib, cordis.patch.yml, static/vendor, static/scripts, package.json]。cordis.patch.yml 单条 insert：id+name=dsh-bi-dashboards（替代旧 install-to-dsh.sh 追加的双条目块）。用户数据全部在包外持久化目录 ~/.dsh/bi-dashboards/（env BI_DASHBOARDS_HOME 可覆盖）：config.json、data/bi-dashboards.json、vendor/echarts.min.js；index.js 启动时经 subprocess mkdir -p 建目录，一次性从旧包位置 ../bi-dashboards-host 迁移（lib/config.json.migrated→lib/config.json→包根 config.json 依次合并、仅非 localhost 服务地址收编；vendorFile 的 static/vendor 前缀重写为 vendor/；看板数据与 vendor 不覆盖已存在持久化文件），vendor 缺失时从包内 static/vendor/echarts.min.js 种子副本播种。config.json 相对路径现在相对持久化目录解析（不再相对 PKG_DIR）；bi.setConfig 亦写持久化目录。安装走官方通道 dsh plugin --profile web add github:LYJ132/bi-plugin；旧机器用 static/scripts/migrate-to-native.sh（备份→迁移→删旧双包→删 profile cordis.patch.yml 旧块）；install-to-dsh.sh 已标废弃保留。教训：测迁移脚本必须 export DSH_PROFILE/BI_DASHBOARDS_HOME，否则脚本落到真实 profile。"
   },
-  "experiences": [],
+  "experiences": [
+    {
+      "id": "impl-20260914-07",
+      "date": "2026-09-14",
+      "title": "DSH 启动崩溃：dsh-bi-dashboards 外部依赖 @deepseek-ai/dsh-tools 未打包未声明",
+      "root_cause": "pnpm link 装入 dsh-bi-dashboards 后 boot 崩溃（failed to import loader entry dsh-bi-dashboards: Cannot find package @deepseek-ai/dsh-tools from lib/index.js）。cordis-plugin-loader 以普通 ESM 解析插件入口、对 @deepseek-ai/* 无回退；lib/index.js 顶层外部 import 未声明 dependencies、仓库无 node_modules；symlink 安装使 Node 沿 realpath（仓库目录）解析，profile node_modules 不在解析链上。dsh-notification 等官方插件全量 esbuild 打包故不受影响。早期 dsh-notification client.js 报错为连带表象，非独立故障。",
+      "fix": "仓库根（gitignored）node_modules/@deepseek-ai 放入 dsh-tools 依赖闭包（symlink 至 dsh 应用自带同版本包）；重启后 DSH 全量加载。长期建议：发布形态应 esbuild 全量打包 lib，或在 package.json 声明 dependencies。",
+      "verification": "boot 无错误、[bi] Phase5 已加载、/plugins/dsh-notification/client.js?rev=db1e9ee79535 与 /plugins/dsh-bi-dashboards/client.js 均 200、dsh plugin list 两包均在",
+      "evidence": "/tmp/dsh-repro.log（崩溃栈）、/tmp/dsh-repro2.log（健康 boot）"
+    }
+  ],
   "task_patterns": {},
   "contracts": []
 }
