@@ -1,0 +1,10 @@
+{
+  "common_knowledge": {
+    "universal_package_principle": "bi-plugin 只有一份代码，部署在任意机器（数据主机/目标机）均同一实现；角色纯由 config.json 的 dataApi/statusUrl 指向决定——数据主机填 http://localhost:8600，目标机填数据主机地址。禁止按机器角色分叉代码。",
+    "ring_state_design": "看板状态环四态：离线(bi.ping 失败, 橙)、疑似停摆(sync.stale, 红 #f56c6c)、同步中(绿)、倒计时(橙)；倒计时周期 cyc = (sync.crawl_interval_minutes||15)*60，不再硬编码 900s。bi.getStatus 统一返回 { data:{ok,ms,error}, sync:{...status.json, stale, crawl_interval_minutes, next_run_at}, offline } 且 sync 字段平铺到顶层兼容旧读取方。",
+    "file_by_file_port_list": "TEMP(/mnt/d/Desktop/TEMP/bi-plugin) 独有改动已全部收编：data-service/api/query.py 白名单+forecast_monthly/accuracy/history；sql/views_forecast_zh.sql（整文件）；index.js NAME_MAP_ZH 预测3表+采购备份+15字段中文翻译、bi.getStatus 数据探活+停摆语义；client.js SyncBar stale/cyc/数据服务时延；web/start.sh PID 文件管理；rules/PLUGIN.md E4(2026-09-12 停摆事故)+E5(合并决策)。install-to-dsh.sh/INSTALL.md 保持当前仓版本（更新更强）。"
+  },
+  "experiences": [],
+  "task_patterns": {},
+  "contracts": []
+}
