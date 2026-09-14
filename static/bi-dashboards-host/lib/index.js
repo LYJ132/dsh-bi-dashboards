@@ -207,9 +207,6 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   biApi['bi.getStatus'] = async (args) => {
     await cfgReady
     const out = {}
-    const t0 = Date.now()
-    try { await callApi(ctx, 'GET', '/api/meta/tables', undefined, 5000); out.data = { ok: true, ms: Date.now() - t0 } }
-    catch (e) { out.data = { ok: false, ms: null, error: String(e && e.message || e).slice(0, 120) } }
     let sync = null
     if (CFG.statusUrl) {
       let st = null

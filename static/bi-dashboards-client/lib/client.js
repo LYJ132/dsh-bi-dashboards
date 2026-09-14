@@ -231,10 +231,9 @@ function SyncBar(props) {
   }
   const probeOk = probe === null ? null : !!(probe && probe.ok)
   const offline = probeOk === null ? (!st || !!st.offline) : !probeOk
-  const data = (st && st.data) || { ok: !offline, ms: null }
-  const dataOk = probeOk === null ? !!data.ok : probeOk
-  const dataMs = (probe && probe.ms != null) ? probe.ms : (data.ok ? data.ms : null)
-  const sync = (st && st.sync) || (st && st.data === undefined && st.running !== undefined ? st : null)
+  const dataOk = !!probeOk
+  const dataMs = (probe && probe.ms != null) ? probe.ms : null
+  const sync = (st && st.sync) || (st && st.running !== undefined ? st : null)
   const stale = !!(sync && sync.stale)
   const running = !offline && !!(sync && sync.running)
   const nextMs = (sync && sync.next_run_at) ? (new Date(sync.next_run_at).getTime() - nowTs) : NaN
