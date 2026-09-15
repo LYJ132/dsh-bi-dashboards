@@ -38,11 +38,12 @@ async function updateCheckState(ctx) {
   const repo = updateRepoDir()
   if (!repo) {
     // 快照安装（github: 形态，包目录无 .git）：本地版本实时读包内 package.json；
-    // 远端最新版 best-effort 走 `npm view github:… version`（短超时，失败只置 null，绝不臆造落后数）
+    // 远端最新版 best-effort 走 `npm view github:… version`（外层 timeout 40s 硬上限——弱网/劫持环境
+    // 下 npm 会无限挂起，runCmd 的 timeoutMs 不强制；失败只置 null，绝不臆造落后数）
     const version = livePkgVersion(PKG_DIR)
     let latestVersion = null
     try {
-      const nv = await runCmd(ctx, ['npm', 'view', REPO_URL, 'version'], '/tmp', 30000)
+      const nv = await runCmd(ctx, ['timeout', '-k', '5', '40', 'npm', 'view', REPO_URL, 'version'], '/tmp', 45000)
       if (nv.code === 0) { const m = String(nv.out).match(/\d+\.\d+\.\d+[0-9A-Za-z.\-]*/); if (m) latestVersion = m[0] }
     } catch (e) {}
     return { repo: false, version, latestVersion, canUpdate: true, method: 'native-add', hint: UPD_NATIVE_HINT }
@@ -341,7 +342,8 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
         }
         if (nat.code !== 0) {
           const detail = String(nat.err || nat.out || ('exit ' + nat.code)).slice(0, 400)
-          return { ok: false, error: /ENOENT/.test(detail) ? '未找到 dsh 命令，请手动执行：' + UPD_HINT : 'dsh plugin add 失败: ' + detail }
+          const notFound = nat.code === 127 || /ENOENT|command not found|no such file/i.test(detail)
+          return { ok: false, error: notFound ? '未找到 dsh 命令，请手动执行：' + UPD_HINT : 'dsh plugin add 失败: ' + detail }
         }
         return { ok: true, updated: true, method: 'native-add', note: '重启 DSH 生效' }
       }
