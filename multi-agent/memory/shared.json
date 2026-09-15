@@ -32,6 +32,13 @@
       "fix": "feature/unified-update：src/index.js 以 updateRepoDir() 分流——git 形态路径逐字保留（pull --ff-only + build，check 输出 version/livePkgVersion + latestVersion(git show) + behind + clean 不变）；快照形态 check 实时读包内 package.json 版本 + `timeout 40 npm view github:LYJ132/dsh-bi-dashboards version` best-effort（失败只置 null，绝不臆造 behind），返回 {repo:false,version,latestVersion,canUpdate:true,method:'native-add',hint:'点更新将从 GitHub 拉取最新版'}；run 经同一 runCmd spawn `dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards`（300s 名义超时，cwd=/tmp），成功返回 {ok:true,updated:true,method:'native-add',note:'重启 DSH 生效'}，失败透传 stderr、127/ENOENT 提示手动命令。client.js UpdateCard：method==='native-add' 时按钮常亮、状态显示 hint、verLine 用 verGt 比较决定是否画 → v最新；git 形态展示逻辑不变。两形态共存于同一 UI 动作，PERSIST_DIR 全程不触碰。",
       "verification": "node --check 三文件通过；npm run build 零警告，lib/index.js 含 native-add/dsh plugin 分流；沙箱 harness（/tmp/bi-upd-test，假 subprocess + 假 npm/dsh bin）5 例全过：check 成功/失败形态、run 成功/失败/命令缺失；git diff master 证实 git 路径零改动。",
       "evidence": "feature/unified-update commits 2e36cd6/cca1328/a602533/8f3877c；/tmp/bi-upd-test（可重跑 node gen.mjs && node lib/gen.mjs）"
+    },
+    {
+      "id": "impl-20260915-07",
+      "date": "2026-09-15",
+      "title": "DSH 插件斜杠命令注册（bi-update / bi-create）",
+      "pointer": "DSH 插件注册斜杠命令在 Host 半部经 ctx.commands.register（服务 @deepseek-ai/dsh-commands，CommandDefinition/CommandResult 见其 types）；客户端 / 菜单 commands/list 自动刷新、无需改 client。完整经验见 .orch-lite/memory.json 同 id 条目；工作流见 rules/COMMANDS.md、命令一览见 README「斜杠命令」节。commandUi popupSelect/inputTriggers 为更弱备选（纯 UI 层、无生命周期）；dsh-mnemon 为参考实现。",
+      "evidence": "src/index.js:181/67/104-114/116-141/434-435；feature/slash-commands commit d654744"
     }
   ],
   "task_patterns": {},

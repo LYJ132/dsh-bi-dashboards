@@ -32,6 +32,7 @@ DSH profile 级全局静态插件：提供「我的看板」视图标签、看�
 | `rules/CHART.md` | **图表模式规范**：模式边界、请求分类、需求确认清单、绘制流程、修改规范 + 架构约束（分层/输出优先级/稳定性） | 做图表时按需读 |
 | `rules/CHART-ITERATION.md` | 图表方向迭代记忆（问题/原因/解决/工作流修改 四段式） | 图表模式按需读 |
 | `rules/PLUGIN.md` | **创造模式规范 + 经验账本**：开发契约速查 + E 序号经验条目 | 改插件代码前必读 |
+| `rules/COMMANDS.md` | **斜杠命令扩展工作流**：宿主侧 `ctx.commands.register` 契约、新增命令步骤、file:line 证据锚点 | 增改斜杠命令时读 |
 | `static/` | 部署包（bundle 即源码）：bi-dashboards-host / bi-dashboards-client / vendor | 插件本体 |
 | `data/` | 运行时数据 bi-dashboards.json（gitignore，不入库） | host 读写 |
 | `data-service/` | 数据服务（FastAPI :8600，白名单/MCP），`docs/docker-windows/docker-compose.yml` 编排 | 全部数据工具 |
