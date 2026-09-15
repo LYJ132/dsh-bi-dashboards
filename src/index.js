@@ -62,6 +62,83 @@ async function updateCheckState(ctx) {
   if (rv.code === 0) { try { latestVersion = String(JSON.parse(rv.out).version || '') || null } catch (e) {} }
   return { repo: true, version: livePkgVersion(repo), latestVersion, current: head.out.slice(0, 7) + (dt.out ? ' · ' + dt.out.slice(0, 10) : ''), behind: parseInt(cnt.out, 10) || 0, clean: st.code === 0 && st.out === '' }
 }
+// ===== 更新执行唯一入口：设置页「一键更新」(bi.update.run) 与斜杠命令 /bi-update 共用同一条路径， =====
+// ===== 保证两入口行为一致（git 安装 pull --ff-only + build；快照安装原生 dsh plugin add 重装）。 =====
+async function performUpdate(ctx) {
+  try {
+    const repo = updateRepoDir()
+    if (!repo) {
+      // 快照安装：DSH 原生刷新——dsh plugin --profile web add <REPO_URL>（重装最新快照；
+      // 用户数据在包外 PERSIST_DIR，不受重装影响；长超时 300s 容忍弱网 clone+装依赖）
+      let nat
+      try {
+        nat = await runCmd(ctx, ['dsh', 'plugin', '--profile', 'web', 'add', REPO_URL], '/tmp', 300000)
+      } catch (e) {
+        const em = String((e && e.message) || e)
+        return { ok: false, error: (/ENOENT/.test(em) ? '未找到 dsh 命令，无法自动更新，请在终端手动执行：' + UPD_HINT + '（' + em + '）' : em) }
+      }
+      if (nat.code !== 0) {
+        const detail = String(nat.err || nat.out || ('exit ' + nat.code)).slice(0, 400)
+        const notFound = nat.code === 127 || /ENOENT|command not found|no such file/i.test(detail)
+        return { ok: false, error: notFound ? '未找到 dsh 命令，请手动执行：' + UPD_HINT : 'dsh plugin add 失败: ' + detail }
+      }
+      return { ok: true, updated: true, method: 'native-add', note: '重启 DSH 生效' }
+    }
+    const pre = await updateCheckState(ctx)
+    if (pre.error) return { ok: false, error: pre.error }
+    if (!pre.repo) return { ok: false, hint: UPD_HINT }
+    if (pre.behind === 0) return { ok: true, updated: false, version: pre.version, note: '已是最新' }
+    if (!pre.clean) return { ok: false, error: '工作区有改动，已拒绝更新（请先在插件目录处理未提交修改）' }
+    // from/to 一律以「更新后实时读取的版本号」为准（读不到才退回提交号），与卡片展示口径一致
+    const from = pre.version ? 'v' + pre.version : pre.current
+    const pull = await runCmd(ctx, ['git', 'pull', '--ff-only', 'origin', 'master'], repo, 180000)
+    if (pull.code !== 0) return { ok: false, error: 'git pull 失败: ' + (pull.err || pull.out || ('exit ' + pull.code)).slice(0, 400) }
+    const bld = await runCmd(ctx, [process.execPath, 'scripts/build.mjs'], repo, 300000)
+    if (bld.code !== 0) return { ok: false, error: '构建失败: ' + (bld.err || bld.out || ('exit ' + bld.code)).slice(0, 400) }
+    const chk = await updateCheckState(ctx)
+    return { ok: true, updated: true, from, to: chk && chk.version ? 'v' + chk.version : ((chk && chk.current) || ''), note: '重启 DSH 生效' }
+  } catch (e) { return { ok: false, error: String(e && e.message || e) } }
+}
+// ===== 斜杠命令工厂（@deepseek-ai/dsh-commands 契约：CommandDefinition = {name, description, input?, recordInput?, handler(invocation)->CommandResult} =====
+// ===== 参考实现 dsh-mnemon/lib/index.js:404-419（createMnemonCommand/registerCommands）与 dsh-plan-mode（agent 显式调度消息） =====
+function createBiUpdateCommand(ctx) {
+  return {
+    name: 'bi-update',
+    description: '检查并更新 BI 插件到最新版',
+    handler: async () => {
+      const r = await performUpdate(ctx)
+      if (!r || r.ok !== true) return { kind: 'error', text: String((r && (r.error || r.hint)) || '更新失败') }
+      if (!r.updated) return { kind: 'success', text: '已是最新版本 ' + (r.version ? 'v' + r.version : (r.note || '')) }
+      return { kind: 'success', text: '更新完成' + (r.from ? ' ' + r.from + '→' + (r.to || '') : '') + '，' + (r.note || '重启 DSH 生效') }
+    }
+  }
+}
+function createBiCreateCommand() {
+  return {
+    name: 'bi-create',
+    description: '用自然语言描述生成 BI 看板',
+    input: { hint: '<看板描述，如：近30天各品类销售额趋势>' },
+    // 提交给 agent 的用户消息本身即权威领域事件、已承载描述文本，故 recordInput:false 避免会话日志重复记录
+    recordInput: false,
+    handler: (invocation) => {
+      const desc = String(invocation.rawInput || '').trim()
+      if (!desc) return { kind: 'success', text: '用法: /bi-create <描述>，例如 /bi-create 近30天各品类销售额趋势' }
+      if (invocation.signal && invocation.signal.aborted) return { kind: 'error', text: '请求已取消' }
+      const agent = invocation.agent
+      if (!agent || typeof agent.followup !== 'function') return { kind: 'error', text: '当前会话无法直接发起生成，请在对话框中输入该描述。' }
+      try {
+        agent.followup({
+          role: 'user',
+          content: [{ type: 'text', text: '用户通过 /bi-create 请求生成看板：' + desc + '\n请按看板生成流程处理：先用 get_meta 核对字段（销售口径需 filters order_status=1，趋势图加时间过滤），再调用 render_dashboard 生成预览，回复末尾用 dsh-ui 围栏 {"kind":"dashboard","id":"<本次 previewId>"} 展示，并询问用户是否保存到「我的看板」。' }],
+          source: { kind: 'user' }
+        })
+      } catch (e) {
+        return { kind: 'error', text: '提交失败: ' + String((e && e.message) || e) }
+      }
+      return { kind: 'success', text: '已提交看板生成请求：' + desc + '（模型生成中，稍候查看预览）' }
+    }
+  }
+}
 function aggregate(rows, chart) { const gb = chart.group_by || []; const metrics = chart.metrics || []; const groups = new Map(); for (const row of rows) { const key = gb.map(c => String(row[c] == null ? '' : row[c])).join('\u0001'); let g = groups.get(key); if (!g) { g = { gvals: gb.map(c => (row[c] == null ? '' : row[c])), sum: metrics.map(() => 0), count: metrics.map(() => 0), min: metrics.map(() => Infinity), max: metrics.map(() => -Infinity) }; groups.set(key, g) }; metrics.forEach((m, i) => { const v = Number(row[m.column]); if (Number.isFinite(v)) { g.sum[i] += v; g.count[i] += 1; if (v < g.min[i]) g.min[i] = v; if (v > g.max[i]) g.max[i] = v } }) }; let out = []; for (const g of groups.values()) { const r = {}; gb.forEach((c, i) => { r[c] = g.gvals[i] }); metrics.forEach((m, i) => { let val; if (m.agg === 'count') val = g.count[i]; else if (m.agg === 'avg') val = g.count[i] ? g.sum[i] / g.count[i] : 0; else if (m.agg === 'min') val = g.count[i] ? g.min[i] : 0; else if (m.agg === 'max') val = g.count[i] ? g.max[i] : 0; else val = g.sum[i]; r[m.alias] = Math.round(val * 100) / 100 }); out.push(r) }; if (chart.sort && chart.sort.by) { const by = chart.sort.by, desc = chart.sort.desc !== false; out = out.sort((a, b) => desc ? (Number(b[by]) - Number(a[by])) : (Number(a[by]) - Number(b[by]))) }; if (chart.limit) out = out.slice(0, chart.limit); return out }
 function buildOption(chart, rows) { if (chart.type === 'text') return { type: 'text', title: chart.title, text: chart.text || '' }; const metric = chart.metrics && chart.metrics[0]; const gb = (chart.group_by || [])[0]; if (chart.type === 'table') { const tcols = rows.length ? Object.keys(rows[0]) : []; const tl = {}; tcols.forEach(function (c2) { tl[c2] = NAME_MAP_ZH.fields[c2] || c2 }); return { type: 'table', title: chart.title, columns: tcols, columnLabels: tl, rows } } if (chart.type === 'kpi') return { type: 'kpi', title: chart.title, value: rows.length && metric ? rows[0][metric.alias] : null }; const names = rows.map(r => String(r[gb] != null ? r[gb] : '')); const vals = rows.map(r => Number(metric ? r[metric.alias] : 0)); if (chart.type === 'pie') return { type: 'pie', title: chart.title, series: [{ type: 'pie', radius: ['30%', '65%'], data: rows.map((r, i) => ({ name: names[i], value: vals[i] })) }] }; return { type: chart.type, title: chart.title, xAxis: { type: 'category', data: names, axisLabel: { rotate: 30, interval: 0 } }, yAxis: { type: 'value' }, series: [{ type: chart.type, data: vals, name: metric ? metric.alias : '' }] } }
 function neededColumns(chart) { const s = new Set(); (chart.group_by || []).forEach(c => s.add(c)); (chart.metrics || []).forEach(m => m.column && s.add(m.column)); (chart.filters || []).forEach(f => f.column && s.add(f.column)); return Array.from(s) }
@@ -101,7 +178,7 @@ const latestSchema = new Map()
 let LAST_SCHEMA = null
 const PREVIEW_MAX = 200
 const PREVIEW_TTL_DAYS = 30
-export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tools'], apply(ctx) {
+export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tools', 'commands'], apply(ctx) {
   // 先确保持久化目录结构存在（fs 服务不保证建父目录，走 subprocess mkdir -p）
   const persistReady = (async function () { const sub = ctx.get('subprocess'); if (!sub) return; try { const h = sub.spawn({ argv: ['mkdir', '-p', PERSIST_DIR + '/vendor', PERSIST_DIR + '/data'], cwd: '/tmp', stdio: { stdin: 'ignore', stdout: { maxBytes: 65536 }, stderr: { maxBytes: 65536 } }, graceMs: 5000 }); await h.done } catch (e) {} })()
   cfgReady = (async function () {
@@ -327,41 +404,8 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   }
   biApi['bi.triggerSync'] = async (args) => { try { const t = await callApi(ctx, 'POST', CFG.statusUrl + '/run', undefined, 8000); try { return JSON.parse(t) } catch (e2) { return { ok: true } } } catch (e) { return { error: String(e && e.message || e) } } }
   biApi['bi.update.check'] = async (args) => { try { return await updateCheckState(ctx) } catch (e) { return { repo: true, error: String(e && e.message || e) } } }
-  biApi['bi.update.run'] = async (args) => {
-    try {
-      const repo = updateRepoDir()
-      if (!repo) {
-        // 快照安装：DSH 原生刷新——dsh plugin --profile web add <REPO_URL>（重装最新快照；
-        // 用户数据在包外 PERSIST_DIR，不受重装影响；长超时 300s 容忍弱网 clone+装依赖）
-        let nat
-        try {
-          nat = await runCmd(ctx, ['dsh', 'plugin', '--profile', 'web', 'add', REPO_URL], '/tmp', 300000)
-        } catch (e) {
-          const em = String((e && e.message) || e)
-          return { ok: false, error: (/ENOENT/.test(em) ? '未找到 dsh 命令，无法自动更新，请在终端手动执行：' + UPD_HINT + '（' + em + '）' : em) }
-        }
-        if (nat.code !== 0) {
-          const detail = String(nat.err || nat.out || ('exit ' + nat.code)).slice(0, 400)
-          const notFound = nat.code === 127 || /ENOENT|command not found|no such file/i.test(detail)
-          return { ok: false, error: notFound ? '未找到 dsh 命令，请手动执行：' + UPD_HINT : 'dsh plugin add 失败: ' + detail }
-        }
-        return { ok: true, updated: true, method: 'native-add', note: '重启 DSH 生效' }
-      }
-      const pre = await updateCheckState(ctx)
-      if (pre.error) return { ok: false, error: pre.error }
-      if (!pre.repo) return { ok: false, hint: UPD_HINT }
-      if (pre.behind === 0) return { ok: true, updated: false, note: '已是最新' }
-      if (!pre.clean) return { ok: false, error: '工作区有改动，已拒绝更新（请先在插件目录处理未提交修改）' }
-      // from/to 一律以「更新后实时读取的版本号」为准（读不到才退回提交号），与卡片展示口径一致
-      const from = pre.version ? 'v' + pre.version : pre.current
-      const pull = await runCmd(ctx, ['git', 'pull', '--ff-only', 'origin', 'master'], repo, 180000)
-      if (pull.code !== 0) return { ok: false, error: 'git pull 失败: ' + (pull.err || pull.out || ('exit ' + pull.code)).slice(0, 400) }
-      const bld = await runCmd(ctx, [process.execPath, 'scripts/build.mjs'], repo, 300000)
-      if (bld.code !== 0) return { ok: false, error: '构建失败: ' + (bld.err || bld.out || ('exit ' + bld.code)).slice(0, 400) }
-      const chk = await updateCheckState(ctx)
-      return { ok: true, updated: true, from, to: chk && chk.version ? 'v' + chk.version : ((chk && chk.current) || ''), note: '重启 DSH 生效' }
-    } catch (e) { return { ok: false, error: String(e && e.message || e) } }
-  }
+  // 「一键更新」委托共享内部函数 performUpdate（/bi-update 命令走同一条路径，行为完全一致）
+  biApi['bi.update.run'] = async (args) => await performUpdate(ctx)
   biApi['bi.reorderViews'] = async (args) => { const s = await readStore(fsv); const ids = (args.ids || []).map(Number); if (!ids.length) return { error: 'ids 不能为空' }; const byId = {}; (s.views || []).forEach(function (v) { byId[v.id] = v }); const reordered = []; ids.forEach(function (id) { if (byId[id]) { reordered.push(byId[id]); delete byId[id] } }); Object.keys(byId).forEach(function (id) { reordered.push(byId[id]) }); s.views = reordered; await writeStore(fsv); return { ok: true } }
   const metaTool = defineTool({ name: 'get_meta', description: '获取无人超市数据库数据字典。', parameters: { subject: { type: 'string', enum: ['tables', 'relationships', 'columns'] }, table: { type: 'string' } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }] }, async execute(args, exec) { const subject = args.subject || 'tables'; if (subject === 'relationships') return await getJson(ctx, 'GET', '/api/meta/relationships'); if (subject === 'columns') { if (!args.table) throw new Error('需要 table'); return await getJson(ctx, 'GET', '/api/meta/table/' + encodeURIComponent(args.table)) } return await getJson(ctx, 'GET', '/api/meta/tables') } })
   ctx.tools.register(metaTool)
@@ -385,6 +429,10 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     }
   })
   ctx.tools.register(modifyTool)
+  // 斜杠命令注册（@deepseek-ai/dsh-commands：ctx.commands.register，宿主全局，客户端 / 菜单自动出现）
+  // 用 ctx.effect 持有 register 返回的 disposer，插件卸载时反注册（dsh-mnemon/plan-mode 同款）
+  ctx.effect(() => ctx.commands.register(createBiUpdateCommand(ctx)))
+  ctx.effect(() => ctx.commands.register(createBiCreateCommand()))
   let loginSpawnedAt = 0
   biApi['bi.triggerLogin'] = async (args) => {
     const nowMs = Date.now()
