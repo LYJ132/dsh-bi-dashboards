@@ -42,7 +42,11 @@ async function updateCheckState(ctx) {
   const cnt = await runCmd(ctx, ['git', 'rev-list', '--count', 'HEAD..origin/master'], repo, 15000)
   const st = await runCmd(ctx, ['git', 'status', '--porcelain'], repo, 15000)
   const dt = await runCmd(ctx, ['git', 'show', '-s', '--format=%cI', 'HEAD'], repo, 15000)
-  return { repo: true, version: livePkgVersion(repo), current: head.out.slice(0, 7) + (dt.out ? ' · ' + dt.out.slice(0, 10) : ''), behind: parseInt(cnt.out, 10) || 0, clean: st.code === 0 && st.out === '' }
+  // 远端最新版本：直接读 origin/master 上的 package.json（与工作区读取相互独立），失败回退 null
+  let latestVersion = null
+  const rv = await runCmd(ctx, ['git', 'show', 'origin/master:package.json'], repo, 15000)
+  if (rv.code === 0) { try { latestVersion = String(JSON.parse(rv.out).version || '') || null } catch (e) {} }
+  return { repo: true, version: livePkgVersion(repo), latestVersion, current: head.out.slice(0, 7) + (dt.out ? ' · ' + dt.out.slice(0, 10) : ''), behind: parseInt(cnt.out, 10) || 0, clean: st.code === 0 && st.out === '' }
 }
 function aggregate(rows, chart) { const gb = chart.group_by || []; const metrics = chart.metrics || []; const groups = new Map(); for (const row of rows) { const key = gb.map(c => String(row[c] == null ? '' : row[c])).join('\u0001'); let g = groups.get(key); if (!g) { g = { gvals: gb.map(c => (row[c] == null ? '' : row[c])), sum: metrics.map(() => 0), count: metrics.map(() => 0), min: metrics.map(() => Infinity), max: metrics.map(() => -Infinity) }; groups.set(key, g) }; metrics.forEach((m, i) => { const v = Number(row[m.column]); if (Number.isFinite(v)) { g.sum[i] += v; g.count[i] += 1; if (v < g.min[i]) g.min[i] = v; if (v > g.max[i]) g.max[i] = v } }) }; let out = []; for (const g of groups.values()) { const r = {}; gb.forEach((c, i) => { r[c] = g.gvals[i] }); metrics.forEach((m, i) => { let val; if (m.agg === 'count') val = g.count[i]; else if (m.agg === 'avg') val = g.count[i] ? g.sum[i] / g.count[i] : 0; else if (m.agg === 'min') val = g.count[i] ? g.min[i] : 0; else if (m.agg === 'max') val = g.count[i] ? g.max[i] : 0; else val = g.sum[i]; r[m.alias] = Math.round(val * 100) / 100 }); out.push(r) }; if (chart.sort && chart.sort.by) { const by = chart.sort.by, desc = chart.sort.desc !== false; out = out.sort((a, b) => desc ? (Number(b[by]) - Number(a[by])) : (Number(a[by]) - Number(b[by]))) }; if (chart.limit) out = out.slice(0, chart.limit); return out }
 function buildOption(chart, rows) { if (chart.type === 'text') return { type: 'text', title: chart.title, text: chart.text || '' }; const metric = chart.metrics && chart.metrics[0]; const gb = (chart.group_by || [])[0]; if (chart.type === 'table') { const tcols = rows.length ? Object.keys(rows[0]) : []; const tl = {}; tcols.forEach(function (c2) { tl[c2] = NAME_MAP_ZH.fields[c2] || c2 }); return { type: 'table', title: chart.title, columns: tcols, columnLabels: tl, rows } } if (chart.type === 'kpi') return { type: 'kpi', title: chart.title, value: rows.length && metric ? rows[0][metric.alias] : null }; const names = rows.map(r => String(r[gb] != null ? r[gb] : '')); const vals = rows.map(r => Number(metric ? r[metric.alias] : 0)); if (chart.type === 'pie') return { type: 'pie', title: chart.title, series: [{ type: 'pie', radius: ['30%', '65%'], data: rows.map((r, i) => ({ name: names[i], value: vals[i] })) }] }; return { type: chart.type, title: chart.title, xAxis: { type: 'category', data: names, axisLabel: { rotate: 30, interval: 0 } }, yAxis: { type: 'value' }, series: [{ type: chart.type, data: vals, name: metric ? metric.alias : '' }] } }
@@ -318,13 +322,14 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
       if (!pre.repo) return { ok: false, hint: UPD_HINT }
       if (pre.behind === 0) return { ok: true, updated: false, note: '已是最新' }
       if (!pre.clean) return { ok: false, error: '工作区有改动，已拒绝更新（请先在插件目录处理未提交修改）' }
-      const from = pre.current
+      // from/to 一律以「更新后实时读取的版本号」为准（读不到才退回提交号），与卡片展示口径一致
+      const from = pre.version ? 'v' + pre.version : pre.current
       const pull = await runCmd(ctx, ['git', 'pull', '--ff-only', 'origin', 'master'], repo, 180000)
       if (pull.code !== 0) return { ok: false, error: 'git pull 失败: ' + (pull.err || pull.out || ('exit ' + pull.code)).slice(0, 400) }
       const bld = await runCmd(ctx, [process.execPath, 'scripts/build.mjs'], repo, 300000)
       if (bld.code !== 0) return { ok: false, error: '构建失败: ' + (bld.err || bld.out || ('exit ' + bld.code)).slice(0, 400) }
       const chk = await updateCheckState(ctx)
-      return { ok: true, updated: true, from, to: (chk && chk.current) || '', note: '重启 DSH 生效' }
+      return { ok: true, updated: true, from, to: chk && chk.version ? 'v' + chk.version : ((chk && chk.current) || ''), note: '重启 DSH 生效' }
     } catch (e) { return { ok: false, error: String(e && e.message || e) } }
   }
   biApi['bi.reorderViews'] = async (args) => { const s = await readStore(fsv); const ids = (args.ids || []).map(Number); if (!ids.length) return { error: 'ids 不能为空' }; const byId = {}; (s.views || []).forEach(function (v) { byId[v.id] = v }); const reordered = []; ids.forEach(function (id) { if (byId[id]) { reordered.push(byId[id]); delete byId[id] } }); Object.keys(byId).forEach(function (id) { reordered.push(byId[id]) }); s.views = reordered; await writeStore(fsv); return { ok: true } }
