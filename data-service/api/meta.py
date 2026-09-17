@@ -1,14 +1,19 @@
 """数据字典与表关系接口。
 
 这些端点是"AI 获取数据及数据间的关系"的基础：
-- /api/meta/tables         全部表清单 + 行数 + 中文说明
-- /api/meta/table/{table}  单表字段（名称/类型/可空/注释）
+- /api/meta/tables         可访问表清单 + 行数估算 + 中文说明
+- /api/meta/table/{table}  单表字段（名称/类型/可空/默认值）
 - /api/meta/relationships  表间关系（数据库外键 + 手工补充的业务关系）
+
+访问控制与查询/MCP 共用 services.access 的 default-deny helper：不可访问的表**不出现在**
+响应里（不泄露存在性），白名单存储不可用时返回 503。
+行数用 pg_class.reltuples 估算（审计 B?：不再对每表 COUNT(*) 全扫），并标记 estimated。
 """
 
 from fastapi import APIRouter, HTTPException
 
 from db import get_pool
+from services.access import AccessControlError, accessible_tables, ensure_table_access
 
 router = APIRouter(prefix="/api/meta", tags=["meta"])
 
@@ -38,60 +43,51 @@ MANUAL_RELATIONSHIPS = [
     },
 ]
 
-# 数据字典描述范围：仅公开可查询的表（与 query.py 白名单一致）
-# 2026-09-09: 移除 alert_subscriber/replenish_subscribe(订阅已飞书化)/shelf(不存在),新增 v_procurement_disposition
-META_TABLES = {
-    "category_dim", "date_dim", "forecast_results",
-    "inventory_total", "n8n_operation_log", "order_detail_raw",
-    "procurement_management", "product_main", "replenish_log",
-    "shelf_product_rel", "store_info",
-    "store_stat_raw", "sync_meta", "user_dim",
-    "v_procurement_disposition",
-}
-
-
-async def _meta_allowed(table: str) -> bool:
-    """是否在白名单开关里开放（保存即生效）。"""
-    try:
-        from services.settings_service import get_whitelist
-        whitelist = await get_whitelist()
-        return whitelist.get(table, True)
-    except Exception:
-        return True
-
 
 @router.get("/tables")
 async def list_tables():
-    """全部表清单 + 行数 + 说明。"""
+    """可访问表清单 + 行数估算 + 说明。不可访问的表直接省略。"""
+    try:
+        allowed = await accessible_tables()
+    except AccessControlError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
     pool = get_pool()
     async with pool.acquire() as conn:
+        # reltuples 是统计估算值（未 ANALYZE 的表可能为 -1/0），远快于逐表 COUNT(*)。
         rows = await conn.fetch("""
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-            ORDER BY table_name
+            SELECT c.relname AS table_name,
+                   CASE WHEN c.reltuples::bigint < 0 THEN 0 ELSE c.reltuples::bigint END AS row_estimate
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+            ORDER BY c.relname
         """)
         tables = []
         for r in rows:
             name = r["table_name"]
-            try:
-                cnt = await conn.fetchval(f'SELECT COUNT(*) FROM "{name}"')
-            except Exception:
-                cnt = None
+            if name not in allowed:
+                continue  # 默认拒绝：不可访问的表不出现（不泄露存在性）
             tables.append({
                 "table": name,
-                "rows": cnt,
+                "rows": int(r["row_estimate"] or 0),
+                "estimated": True,  # 标记为估算值，非精确行数
                 "description": TABLE_DESCRIPTIONS.get(name, ""),
-                "accessible": await _meta_allowed(name),
+                "accessible": True,
             })
         return {"tables": tables}
 
 
 @router.get("/table/{table_name}")
 async def table_columns(table_name: str):
-    """单表字段清单。"""
-    if not await _meta_allowed(table_name):
-        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not in accessible set")
+    """单表字段清单。不可访问/不存在的表统一返回 404（不区分以避免枚举）。"""
+    try:
+        await ensure_table_access(table_name)
+    except AccessControlError as e:
+        # 403=不可访问 -> 按 404 处理避免枚举；503=存储不可用 -> 透传
+        if e.status_code == 503:
+            raise HTTPException(status_code=503, detail=e.detail) from e
+        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found") from e
     pool = get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
@@ -100,6 +96,8 @@ async def table_columns(table_name: str):
             WHERE table_schema = 'public' AND table_name = $1
             ORDER BY ordinal_position
         """, table_name)
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
         return {
             "table": table_name,
             "description": TABLE_DESCRIPTIONS.get(table_name, ""),
@@ -117,33 +115,44 @@ async def table_columns(table_name: str):
 
 @router.get("/relationships")
 async def relationships():
-    """表间关系：数据库外键 + 手工补充的业务关系。"""
+    """表间关系：数据库外键 + 手工补充的业务关系。仅返回两端均可访问的关系。"""
+    try:
+        allowed = await accessible_tables()
+    except AccessControlError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
     pool = get_pool()
     async with pool.acquire() as conn:
+        # 复合外键需按 ordinal_position 配对，否则多列 FK 会产生笛卡尔积的错误映射。
         fks = await conn.fetch("""
             SELECT
                 tc.table_name AS from_table,
                 kcu.column_name AS from_column,
                 ccu.table_name AS to_table,
-                ccu.column_name AS to_column
+                ccu.column_name AS to_column,
+                kcu.ordinal_position AS position
             FROM information_schema.table_constraints tc
             JOIN information_schema.key_column_usage kcu
                 ON tc.constraint_name = kcu.constraint_name
+               AND tc.table_schema = kcu.table_schema
             JOIN information_schema.constraint_column_usage ccu
                 ON tc.constraint_name = ccu.constraint_name
+               AND ccu.ordinal_position = kcu.ordinal_position
             WHERE tc.constraint_type = 'FOREIGN KEY'
               AND tc.table_schema = 'public'
-            ORDER BY tc.table_name, kcu.column_name
+            ORDER BY tc.table_name, kcu.ordinal_position
         """)
         fk_list = []
         for r in fks:
-            if await _meta_allowed(r["from_table"]) and await _meta_allowed(r["to_table"]):
+            if r["from_table"] in allowed and r["to_table"] in allowed:
                 fk_list.append({
                     "from_table": r["from_table"],
                     "from_column": r["from_column"],
                     "to_table": r["to_table"],
                     "to_column": r["to_column"],
+                    "position": int(r["position"]) if r["position"] is not None else None,
                     "kind": "many-to-one",
                     "note": "数据库外键",
                 })
-    return {"relationships": fk_list + MANUAL_RELATIONSHIPS}
+    manual = [rel for rel in MANUAL_RELATIONSHIPS
+              if rel["from_table"] in allowed and rel["to_table"] in allowed]
+    return {"relationships": fk_list + manual}

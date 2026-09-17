@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services import settings_service
+from services.access import MAX_IDENTIFIER_LEN
 from db import get_pool
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -68,39 +69,45 @@ SYSTEM_TABLES = {"ai_settings", "views", "dashboards", "dashboard_settings", "da
 
 @router.get("/tables")
 async def list_tables():
-    """业务数据表清单（过滤系统内部表）+ 说明 + accessible 开关（读白名单）。"""
+    """业务数据表清单（过滤系统内部表）+ 说明 + accessible 开关（读白名单）。
+
+    这是**管理页**：必须列出所有业务表（含尚未启用的），否则默认拒绝下管理员无从开启。
+    accessible 采用 default-deny：whitelist 未列出的表默认 False（需在页面手动开启）。
+    行数为 pg_class.reltuples 估算（避免每表 COUNT(*) 全扫），标记 estimated。
+    """
     pool = get_pool()
     whitelist = await settings_service.get_whitelist()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-            ORDER BY table_name
+            SELECT c.relname AS table_name,
+                   CASE WHEN c.reltuples::bigint < 0 THEN 0 ELSE c.reltuples::bigint END AS row_estimate
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+            ORDER BY c.relname
         """)
         tables = []
         for r in rows:
             name = r["table_name"]
             if name in SYSTEM_TABLES:
                 continue
-            try:
-                cnt = await conn.fetchval(f'SELECT COUNT(*) FROM "{name}"')
-            except Exception:
-                cnt = None
             tables.append({
                 "table": name,
                 "title": TABLE_TITLES.get(name, name),
-                "rows": cnt,
+                "rows": int(r["row_estimate"] or 0),
+                "estimated": True,
                 "description": TABLE_DESCRIPTIONS.get(name, ""),
-                "accessible": bool(whitelist.get(name, True)),
+                # default-deny：未显式置 true 即不可访问
+                "accessible": bool(whitelist.get(name, False)),
             })
     return {"tables": tables}
 
 
 @router.post("/tables")
 async def set_table_access(req: TableAccessRequest):
-    """设置单表访问开关，保存即生效（查询/字典接口即时 403/放行）。"""
-    if not req.table or not req.table.replace("_", "").isalnum():
+    """设置单表访问开关，保存即生效（查询/字典接口即时 403/放行）。写入为原子 jsonb_set。"""
+    if not req.table or len(req.table) > MAX_IDENTIFIER_LEN or not req.table.replace("_", "").isalnum():
         raise HTTPException(status_code=400, detail="invalid table name")
     pool = get_pool()
     async with pool.acquire() as conn:

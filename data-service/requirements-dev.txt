@@ -1,0 +1,4 @@
+# 测试/开发依赖（不进入运行时镜像）。装到本地 venv 用于 pytest。
+-r requirements.txt
+pytest==9.1.1
+httpx==0.28.1
