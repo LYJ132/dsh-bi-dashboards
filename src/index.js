@@ -203,12 +203,66 @@ async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'te
 const filterItem = { type: 'object', additionalProperties: true, properties: { column: { type: 'string', required: true }, op: { type: 'string', required: true, enum: ['=', '!=', '>', '>=', '<', '<=', 'IN', 'NOT_IN', 'LIKE', 'ILIKE', 'BETWEEN', 'IS_NULL', 'IS_NOT_NULL'] }, value: { type: 'json' } } }
 const metricItem = { type: 'object', additionalProperties: true, properties: { column: { type: 'string', required: true }, agg: { type: 'string', required: true, enum: ['sum', 'count', 'avg', 'min', 'max'] }, alias: { type: 'string', required: true } } }
 const chartDef = { type: 'object', additionalProperties: true, properties: { type: { type: 'string', required: true, enum: ['bar', 'line', 'pie', 'table', 'text', 'kpi'] }, title: { type: 'string', required: true }, table: { type: 'string' }, filters: { type: 'array', items: filterItem }, group_by: { type: 'array', items: { type: 'string' } }, metrics: { type: 'array', items: metricItem }, sort: { type: 'object', additionalProperties: true, properties: { by: { type: 'string' }, desc: { type: 'boolean' } } }, limit: { type: 'integer' }, text: { type: 'string' }, granularity: { type: 'string', enum: ['day', 'month'] } } }
+// ===== Store 层（审计 C1-C3）=====
+// 单一 async 写队列：所有落盘经 queueStoreWrite 串行，杜绝并发 writeText 交叠出半截文件；
+// 真正写盘用 temp 文件 + rename 原子替换（rename 同分区原子）。写错误抛给 RPC 调用方，不再吞掉。
+// 读失败（非 ENOENT / JSON 损坏）置 storeReadonlyError：bi.getStatus 透出，且在修复前拒绝一切写入；
+// 之后每次读取都重试磁盘——文件修好后标志自动解除（直到 fixed 的"fixed"由重试成功来判定）。
 let storeCache = null
-async function readStore(fsv) { if (storeCache) return storeCache; try { if (!fsv) return { charts: [], views: [{ id: 1, name: '全部' }] }; const t = await fsv.resolve(CFG.storeFile); const txt = await fsv.readText(t); storeCache = JSON.parse(txt); if (storeCache.dashboards && !storeCache.charts) { const charts = []; (storeCache.dashboards || []).forEach(function (d) { (d.schema && d.schema.charts || []).forEach(function (c, i) { charts.push({ id: String(d.id) + '-' + i, title: c.title || (d.title + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: d.created_at || new Date().toISOString() }) }) }); storeCache.charts = charts; storeCache.dashboards = null; await writeStore(fsv) } if (!storeCache.charts) storeCache.charts = []; if (!storeCache.views) storeCache.views = [{ id: 1, name: '全部' }]; return storeCache } catch (e) { return { charts: [], views: [{ id: 1, name: '全部' }] } } }
-async function writeStore(fsv) { try { if (!fsv) return; const t = await fsv.resolve(CFG.storeFile); await fsv.writeText(t, JSON.stringify(storeCache)) } catch (e) {} }
-function snapLayout(s) { return { layout_locked: !!s.layout_locked, charts: (s.charts || []).map(function (c) { return { id: c.id, layout: c.layout ? { w: c.layout.w, h: c.layout.h } : null, layout_locked: !!c.layout_locked } }), views: (s.views || []).map(function (v) { return { id: v.id, free_layout: !!v.free_layout, chart_pos: JSON.parse(JSON.stringify(v.chart_pos || {})), chart_locks: JSON.parse(JSON.stringify(v.chart_locks || {})) } }) } }
+let storeReadonlyError = null
+let storeReadInflight = null
+let storeWriteChain = Promise.resolve()
+function storeDefault() { return { charts: [], views: [{ id: 1, name: '全部' }] } }
+function readStore() {
+  if (storeCache && !storeReadonlyError) return Promise.resolve(storeCache)
+  if (storeReadInflight) return storeReadInflight
+  const p = readStoreFromDisk().finally(function () { storeReadInflight = null })
+  storeReadInflight = p
+  return p
+}
+async function readStoreFromDisk() {
+  let txt
+  try { txt = await fsp.readFile(CFG.storeFile, 'utf8') }
+  catch (e) {
+    if (e && e.code === 'ENOENT') { storeCache = storeDefault(); storeReadonlyError = null; return storeCache }
+    storeReadonlyError = '看板存储读取失败: ' + String((e && e.message) || e)
+    throw new Error(storeReadonlyError)
+  }
+  try { storeCache = JSON.parse(txt) }
+  catch (e) {
+    storeReadonlyError = '看板存储 JSON 损坏: ' + String((e && e.message) || e)
+    throw new Error(storeReadonlyError)
+  }
+  storeReadonlyError = null
+  if (storeCache.dashboards && !storeCache.charts) { const charts = []; (storeCache.dashboards || []).forEach(function (d) { (d.schema && d.schema.charts || []).forEach(function (c, i) { charts.push({ id: String(d.id) + '-' + i, title: c.title || (d.title + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: d.created_at || new Date().toISOString() }) }) }); storeCache.charts = charts; storeCache.dashboards = null; await queueStoreWrite() }
+  if (!storeCache.charts) storeCache.charts = []
+  if (!storeCache.views) storeCache.views = [{ id: 1, name: '全部' }]
+  return storeCache
+}
+function queueStoreWrite() { const run = storeWriteChain.then(writeStoreNow); storeWriteChain = run.then(function () {}, function () {}); return run }
+async function writeStoreNow() {
+  if (storeReadonlyError) throw new Error('看板存储只读: ' + storeReadonlyError + '（修复存储文件后自动恢复）')
+  if (!storeCache) return
+  const target = CFG.storeFile
+  const tmp = target + '.tmp-' + process.pid + '-' + Date.now()
+  try {
+    await fsp.mkdir(dirname(target), { recursive: true })
+    await fsp.writeFile(tmp, JSON.stringify(storeCache))
+    await fsp.rename(tmp, target)
+  } catch (e) {
+    try { await fsp.unlink(tmp) } catch (e2) {}
+    throw new Error('看板存储写入失败: ' + String((e && e.message) || e))
+  }
+}
+// 快照含图表定义（title/type/chart_def），使 modify_chart 的变更可经 bi.undoLayout 回滚；
+// 旧格式快照无 def 键 → undo 时跳过定义恢复，向后兼容。
+function snapLayout(s) { return { layout_locked: !!s.layout_locked, charts: (s.charts || []).map(function (c) { return { id: c.id, title: c.title, type: c.type, def: c.chart_def ? JSON.parse(JSON.stringify(c.chart_def)) : null, layout: c.layout ? { w: c.layout.w, h: c.layout.h } : null, layout_locked: !!c.layout_locked } }), views: (s.views || []).map(function (v) { return { id: v.id, free_layout: !!v.free_layout, chart_pos: JSON.parse(JSON.stringify(v.chart_pos || {})), chart_locks: JSON.parse(JSON.stringify(v.chart_locks || {})) } }) } }
 function pushUndo(s) { s.undo_stack = s.undo_stack || []; s.undo_stack.push({ at: Date.now(), snap: snapLayout(s) }); if (s.undo_stack.length > 40) s.undo_stack = s.undo_stack.slice(s.undo_stack.length - 40) }
+// ===== latestSchema 会话缓存：LRU 封顶 ~100 条（审计 C4：原实现无界增长，长会话内存泄漏）=====
 const latestSchema = new Map()
+const LATEST_SCHEMA_MAX = 100
+function schemaGet(k) { if (!latestSchema.has(k)) return undefined; const v = latestSchema.get(k); latestSchema.delete(k); latestSchema.set(k, v); return v }
+function schemaSet(k, v) { if (latestSchema.has(k)) latestSchema.delete(k); latestSchema.set(k, v); while (latestSchema.size > LATEST_SCHEMA_MAX) { latestSchema.delete(latestSchema.keys().next().value) } }
 let LAST_SCHEMA = null
 const PREVIEW_MAX = 200
 const PREVIEW_TTL_DAYS = 30
@@ -254,32 +308,31 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   })()
   const ws = ctx.get('webServer'); const fsv = ctx.get('fs'); const biApi = {}; if (ws && fsv) ctx.effect(() => ws.register({ kind: 'exact', path: ECHARTS_ROUTE, handler: async (req, res) => { try { await cfgReady; const t = await fsv.resolve(CFG.vendorFile); const buf = await fsv.readBytes(t, undefined, 4 * 1024 * 1024); res.setHeader('Content-Type', 'application/javascript'); res.setHeader('Cache-Control', 'public, max-age=3600'); res.writeHead(200); res.end(buf) } catch (e) { try { res.writeHead(404); res.end('not found') } catch (e2) {} } },}))
   ctx.systemPrompt.section({ name: 'unmanned-store:dashboard-schema', order: 160, text: '【看板 Dashboard 生成】\n1. 调用 render_dashboard 生成看板（传入结构化 schema，顶层含 title/description/charts；销售必须 filters order_status=1；趋势图加时间过滤；字段来自 get_meta）。月度汇总柱状图可在图表定义里加 granularity:"month"（group_by 仍写 order_date，Host 会按日聚合后合并为月）。\n2. 生成后，工具结果会给出本次预览ID（previewId）。用一句话总结看板要点，并在回复【最后】追加 dsh-ui 围栏，ID 必须使用本次返回的 previewId（每个看板一个独立ID，互不覆盖）：\n```\ndsh-ui\n{"kind":"dashboard","id":"<previewId>"}\n```\n3. 然后询问用户是否保存到「我的看板」，确认后调用 save_dashboard 工具。也可以让用户直接点预览卡片里每个图表旁的「保存」按钮单独保存。' })
-  const renderTool = defineTool({ name: 'render_dashboard', description: '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。', parameters: { schema: { type: 'object', required: true, additionalProperties: true, properties: { title: { type: 'string' }, description: { type: 'string' }, charts: { type: 'array', items: chartDef } } } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已生成看板「' + (v.title || '') + '」，含 ' + (v.chartCount || 0) + ' 个图表。本次预览ID: ' + (v.previewId || '') + ' —— 回复末尾的 dsh-ui 围栏必须写成 {"kind":"dashboard","id":"' + (v.previewId || '') + '"}（用上面的预览ID）。候选筛选字段: ' + ((v.filterCandidates || []).join('、') || '（无维度字段）') + ' —— 请向用户确认要用作筛选的字段；用户确认后调用 save_dashboard 时通过 filter_fields 参数传入（数组，未确认则不传）。' }] }, async execute(args, exec) { const schema = args.schema || {}; let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; latestSchema.set(sessionId, schema); LAST_SCHEMA = { title: schema.title || '', description: schema.description || '', schema: schema };
+  const renderTool = defineTool({ name: 'render_dashboard', description: '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。', parameters: { schema: { type: 'object', required: true, additionalProperties: true, properties: { title: { type: 'string' }, description: { type: 'string' }, charts: { type: 'array', items: chartDef } } } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已生成看板「' + (v.title || '') + '」，含 ' + (v.chartCount || 0) + ' 个图表。本次预览ID: ' + (v.previewId || '') + ' —— 回复末尾的 dsh-ui 围栏必须写成 {"kind":"dashboard","id":"' + (v.previewId || '') + '"}（用上面的预览ID）。候选筛选字段: ' + ((v.filterCandidates || []).join('、') || '（无维度字段）') + ' —— 请向用户确认要用作筛选的字段；用户确认后调用 save_dashboard 时通过 filter_fields 参数传入（数组，未确认则不传）。' }] }, async execute(args, exec) { const schema = args.schema || {}; let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; schemaSet(sessionId, schema); LAST_SCHEMA = { title: schema.title || '', description: schema.description || '', schema: schema };
         const pid = 'pv' + Date.now() + Math.random().toString(36).slice(2, 6)
-        try {
-          const st0 = await readStore(fsv); st0.previews = st0.previews || {}
-          st0.previews[pid] = { title: LAST_SCHEMA.title, description: LAST_SCHEMA.description, schema: schema, created_at: new Date().toISOString(), sessionId: String(sessionId) }
-          st0.lastPreview = LAST_SCHEMA
-          const ttlMs = PREVIEW_TTL_DAYS * 86400000; const nowMs = Date.now()
-          let entries = Object.keys(st0.previews).map(function (k) { return { k: k, at: Date.parse(st0.previews[k].created_at || '') || 0 } })
-          entries.sort(function (a, b) { return b.at - a.at })
-          const keep = {}
-          entries.forEach(function (en, i) { if (i < PREVIEW_MAX && (nowMs - en.at) <= ttlMs) keep[en.k] = st0.previews[en.k] })
-          st0.previews = keep
-          await writeStore(fsv)
-        } catch (e0) {}
+        // 预览持久化失败不再静默吞掉：store 读/写错误直接抛给调用方（审计 C1 写错误传播）
+        const st0 = await readStore(); st0.previews = st0.previews || {}
+        st0.previews[pid] = { title: LAST_SCHEMA.title, description: LAST_SCHEMA.description, schema: schema, created_at: new Date().toISOString(), sessionId: String(sessionId) }
+        st0.lastPreview = LAST_SCHEMA
+        const ttlMs = PREVIEW_TTL_DAYS * 86400000; const nowMs = Date.now()
+        let entries = Object.keys(st0.previews).map(function (k) { return { k: k, at: Date.parse(st0.previews[k].created_at || '') || 0 } })
+        entries.sort(function (a, b) { return b.at - a.at })
+        const keep = {}
+        entries.forEach(function (en, i) { if (i < PREVIEW_MAX && (nowMs - en.at) <= ttlMs) keep[en.k] = st0.previews[en.k] })
+        st0.previews = keep
+        await queueStoreWrite()
         const filterCandidates = []; (schema.charts || []).forEach(function (c) { (c.group_by || []).forEach(function (g) { if (g && filterCandidates.indexOf(g) < 0) filterCandidates.push(g) }) })
         return { title: schema.title || '', chartCount: (schema.charts || []).length, previewId: pid, filterCandidates: filterCandidates } } })
   ctx.tools.register(renderTool)
-  const saveTool = defineTool({ name: 'save_dashboard', description: '把最近生成且用户确认的看板保存到「我的看板」，每个图表作为独立项加入「全部」。', parameters: { title: { type: 'string', description: '看板名称，可选' }, filter_fields: { type: 'array', items: { type: 'string' }, description: '用户确认的筛选字段（列名数组，来自生成时的候选筛选字段）' } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已保存 ' + (v.count || 0) + ' 个图表到我的看板。' }] }, async execute(args, exec) { let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; const schema = latestSchema.get(sessionId); if (!schema || !schema.charts || !schema.charts.length) throw new Error('没有可保存的看板，请先生成看板'); const s = await readStore(fsv); const now = new Date().toISOString(); var base = args.title || schema.title || '看板'; (schema.charts || []).forEach(function (c, i) { const ff = Array.isArray(args.filter_fields) ? args.filter_fields.filter(function (f) { return (c.group_by || []).indexOf(f) >= 0 }) : null; if (s.layout_custom) { s.charts.unshift({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId), filterable: ff && ff.length ? ff : undefined }) } else { s.charts.push({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId) }) } }); await writeStore(fsv); return { count: (schema.charts || []).length, saved: true } } })
+  const saveTool = defineTool({ name: 'save_dashboard', description: '把最近生成且用户确认的看板保存到「我的看板」，每个图表作为独立项加入「全部」。', parameters: { title: { type: 'string', description: '看板名称，可选' }, filter_fields: { type: 'array', items: { type: 'string' }, description: '用户确认的筛选字段（列名数组，来自生成时的候选筛选字段）' } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已保存 ' + (v.count || 0) + ' 个图表到我的看板。' }] }, async execute(args, exec) { let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; const schema = schemaGet(sessionId); if (!schema || !schema.charts || !schema.charts.length) throw new Error('没有可保存的看板，请先生成看板'); const s = await readStore(); const now = new Date().toISOString(); var base = args.title || schema.title || '看板'; (schema.charts || []).forEach(function (c, i) { const ff = Array.isArray(args.filter_fields) ? args.filter_fields.filter(function (f) { return (c.group_by || []).indexOf(f) >= 0 }) : null; if (s.layout_custom) { s.charts.unshift({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId), filterable: ff && ff.length ? ff : undefined }) } else { s.charts.push({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId) }) } }); await queueStoreWrite(); return { count: (schema.charts || []).length, saved: true } } })
   ctx.tools.register(saveTool)
   biApi['bi.renderLatest'] = async (args) => {
     let src = null
     const pid = args && args.id
-    if (pid) { try { const st = await readStore(fsv); const pv = (st.previews || {})[String(pid)]; if (pv && pv.schema) src = pv } catch (e) {} }
-    if (!src) { try { const st = await readStore(fsv); if (st.lastPreview && st.lastPreview.schema) src = st.lastPreview } catch (e) {} }
+    if (pid) { try { const st = await readStore(); const pv = (st.previews || {})[String(pid)]; if (pv && pv.schema) src = pv } catch (e) {} }
+    if (!src) { try { const st = await readStore(); if (st.lastPreview && st.lastPreview.schema) src = st.lastPreview } catch (e) {} }
     if (!src) src = LAST_SCHEMA
-    if (!src) { try { const st = await readStore(fsv); const rec = (st.dashboards || [])[0]; if (rec && rec.schema) src = { title: rec.title, description: rec.description || '', schema: rec.schema } } catch (e) {} }
+    if (!src) { try { const st = await readStore(); const rec = (st.dashboards || [])[0]; if (rec && rec.schema) src = { title: rec.title, description: rec.description || '', schema: rec.schema } } catch (e) {} }
     if (!src) return { error: 'none' }
     const out = []
     for (const ch of (src.schema.charts || [])) {
@@ -295,7 +348,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   }
   biApi['bi.listPreviewIds'] = async (args) => {
     try {
-      const st = await readStore(fsv); const sid = args && args.sessionId ? String(args.sessionId) : null
+      const st = await readStore(); const sid = args && args.sessionId ? String(args.sessionId) : null
       let arr = Object.keys(st.previews || {}).map(function (k) { const r = st.previews[k]; return { id: k, at: r.created_at || '', sid: r.sessionId || null } })
       if (sid !== null) { const mine = arr.filter(function (x) { return x.sid === sid }); if (mine.length > 0) arr = mine }
       arr.sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0 })
@@ -305,27 +358,27 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   biApi['bi.saveChartFromPreview'] = async (args) => {
     let src = null
     const pid = args && args.id
-    if (pid) { try { const st = await readStore(fsv); const pv = (st.previews || {})[String(pid)]; if (pv && pv.schema) src = pv } catch (e) {} }
+    if (pid) { try { const st = await readStore(); const pv = (st.previews || {})[String(pid)]; if (pv && pv.schema) src = pv } catch (e) {} }
     if (!src) src = LAST_SCHEMA
-    if (!src) { try { const st = await readStore(fsv); if (st.lastPreview && st.lastPreview.schema) src = st.lastPreview } catch (e) {} }
+    if (!src) { try { const st = await readStore(); if (st.lastPreview && st.lastPreview.schema) src = st.lastPreview } catch (e) {} }
     const idx = Number(args && args.index)
     const cd = src && src.schema && Array.isArray(src.schema.charts) ? src.schema.charts[idx] : null
     if (!cd) return { error: 'not found' }
-    const s = await readStore(fsv)
+    const s = await readStore()
     const id = String(Date.now()) + '-p' + idx
     const rec = { id: id, title: cd.title || ('图表 ' + idx), type: cd.type, chart_def: cd, view_ids: [1], created_at: new Date().toISOString(), session_id: String((args && args.sessionId) || '') }
     if (s.layout_custom) { s.charts.unshift(rec) } else { s.charts.push(rec) }
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, id: id }
   }
   biApi['bi.duplicateChart'] = async (args) => {
-    const s = await readStore(fsv)
+    const s = await readStore()
     const c = (s.charts || []).find(function (x) { return x.id === String(args.id) })
     if (!c) return { error: 'not found' }
     const id = String(Date.now()) + '-c'
     const rec = { id: id, title: (c.title || '图表') + ' 副本', type: c.type, chart_def: JSON.parse(JSON.stringify(c.chart_def)), view_ids: (c.view_ids || [1]).slice(), created_at: new Date().toISOString(), session_id: c.session_id || '' }
     if (s.layout_custom) { s.charts.unshift(rec) } else { s.charts.push(rec) }
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, id: id }
   }
   biApi['bi.setupChartModificationBranch'] = async (args) => {
@@ -350,20 +403,20 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     }
     return { ok: true }
   }
-  biApi['bi.listViews'] = async (args) => { const s = await readStore(fsv); return (s.views || []).map(function (v) { var cnt = (s.charts || []).filter(function (c) { return (c.view_ids || []).indexOf(v.id) >= 0 }).length; return { id: v.id, name: v.name, count: cnt } }) }
-  biApi['bi.createView'] = async (args) => { const s = await readStore(fsv); if (!args.name || !String(args.name).trim()) return { error: '视图名不能为空' }; const id = Date.now(); s.views.push({ id, name: String(args.name).trim(), created_at: new Date().toISOString() }); await writeStore(fsv); return { id, name: String(args.name).trim() } }
-  biApi['bi.renameView'] = async (args) => { const s = await readStore(fsv); const v = (s.views || []).find(function (x) { return x.id === Number(args.id) }); if (!v) return { error: '视图不存在' }; if (v.id === 1) return { error: '「全部」视图不能重命名' }; v.name = String(args.name || v.name); await writeStore(fsv); return { id: v.id, name: v.name } }
-  biApi['bi.deleteView'] = async (args) => { const s = await readStore(fsv); const v = (s.views || []).find(function (x) { return x.id === Number(args.id) }); if (!v) return { error: '视图不存在' }; if (v.id === 1) return { error: '「全部」视图不能删除' }; s.views = (s.views || []).filter(function (x) { return x.id !== Number(args.id) }); (s.charts || []).forEach(function (c) { if (c.view_ids) c.view_ids = c.view_ids.filter(function (vid) { return vid !== Number(args.id) }) }); await writeStore(fsv); return { ok: true } }
-  biApi['bi.listCharts'] = async (args) => { const s = await readStore(fsv); const viewId = args && args.viewId ? Number(args.viewId) : 1; const view = (s.views || []).find(function (v) { return v.id === viewId }); return { filters: (view && view.filters) || [], free_layout: viewId === 1 ? false : !!(view && view.free_layout), chart_pos: (view && view.chart_pos) || {}, layout_locked: !!s.layout_locked, charts: (s.charts || []).filter(function (c) { return viewId === 1 || (c.view_ids || []).indexOf(viewId) >= 0 }).slice().sort(function (a, b) { return s.layout_custom ? 0 : (b.created_at || '').localeCompare(a.created_at || '') }).map(function (c) { const defL = c.type === 'kpi' ? { w: 3, h: 1 } : { w: 6, h: 2 }; return { id: c.id, title: c.title, type: c.type, created_at: c.created_at, view_ids: c.view_ids || [1], session_id: c.session_id || '', table: c.chart_def ? c.chart_def.table : undefined, filterable: ((c.filterable && c.filterable.length) ? c.filterable : (function () { const cd = c.chart_def || {}; const cols = []; (cd.group_by || []).forEach(function (g2) { if (g2 && cols.indexOf(g2) < 0) cols.push(g2) }); (cd.metrics || []).forEach(function (m2) { if (m2 && m2.column && cols.indexOf(m2.column) < 0) cols.push(m2.column) }); return cols.slice(0, 8) })()).map(function (f) { return { column: f, label: NAME_MAP_ZH.fields[f] || f } }), user_filter: c.user_filter || null, layout: c.layout || defL, layout_locked: !!c.layout_locked, locked: ((view && view.chart_locks) || {})[c.id] } }) } }
+  biApi['bi.listViews'] = async (args) => { const s = await readStore(); return (s.views || []).map(function (v) { var cnt = (s.charts || []).filter(function (c) { return (c.view_ids || []).indexOf(v.id) >= 0 }).length; return { id: v.id, name: v.name, count: cnt } }) }
+  biApi['bi.createView'] = async (args) => { const s = await readStore(); if (!args.name || !String(args.name).trim()) return { error: '视图名不能为空' }; const id = Date.now(); s.views.push({ id, name: String(args.name).trim(), created_at: new Date().toISOString() }); await queueStoreWrite(); return { id, name: String(args.name).trim() } }
+  biApi['bi.renameView'] = async (args) => { const s = await readStore(); const v = (s.views || []).find(function (x) { return x.id === Number(args.id) }); if (!v) return { error: '视图不存在' }; if (v.id === 1) return { error: '「全部」视图不能重命名' }; v.name = String(args.name || v.name); await queueStoreWrite(); return { id: v.id, name: v.name } }
+  biApi['bi.deleteView'] = async (args) => { const s = await readStore(); const v = (s.views || []).find(function (x) { return x.id === Number(args.id) }); if (!v) return { error: '视图不存在' }; if (v.id === 1) return { error: '「全部」视图不能删除' }; s.views = (s.views || []).filter(function (x) { return x.id !== Number(args.id) }); (s.charts || []).forEach(function (c) { if (c.view_ids) c.view_ids = c.view_ids.filter(function (vid) { return vid !== Number(args.id) }) }); await queueStoreWrite(); return { ok: true } }
+  biApi['bi.listCharts'] = async (args) => { const s = await readStore(); const viewId = args && args.viewId ? Number(args.viewId) : 1; const view = (s.views || []).find(function (v) { return v.id === viewId }); return { filters: (view && view.filters) || [], free_layout: viewId === 1 ? false : !!(view && view.free_layout), chart_pos: (view && view.chart_pos) || {}, layout_locked: !!s.layout_locked, charts: (s.charts || []).filter(function (c) { return viewId === 1 || (c.view_ids || []).indexOf(viewId) >= 0 }).slice().sort(function (a, b) { return s.layout_custom ? 0 : (b.created_at || '').localeCompare(a.created_at || '') }).map(function (c) { const defL = c.type === 'kpi' ? { w: 3, h: 1 } : { w: 6, h: 2 }; return { id: c.id, title: c.title, type: c.type, created_at: c.created_at, view_ids: c.view_ids || [1], session_id: c.session_id || '', table: c.chart_def ? c.chart_def.table : undefined, filterable: ((c.filterable && c.filterable.length) ? c.filterable : (function () { const cd = c.chart_def || {}; const cols = []; (cd.group_by || []).forEach(function (g2) { if (g2 && cols.indexOf(g2) < 0) cols.push(g2) }); (cd.metrics || []).forEach(function (m2) { if (m2 && m2.column && cols.indexOf(m2.column) < 0) cols.push(m2.column) }); return cols.slice(0, 8) })()).map(function (f) { return { column: f, label: NAME_MAP_ZH.fields[f] || f } }), user_filter: c.user_filter || null, layout: c.layout || defL, layout_locked: !!c.layout_locked, locked: ((view && view.chart_locks) || {})[c.id] } }) } }
   biApi['bi.setChartFilter'] = async (args) => {
-    const s = await readStore(fsv)
+    const s = await readStore()
     const c = (s.charts || []).find(function (x) { return x.id === String(args && args.id) })
     if (!c) return { error: 'not found' }
     const f = args && args.filter
     const OPS = ['=', '!=', '>', '>=', '<', '<=', 'LIKE', 'BETWEEN', 'IS_NULL', 'IS_NOT_NULL']
     if (f && f.column && (OPS.indexOf(f.op) >= 0 && (f.op === 'IS_NULL' || f.op === 'IS_NOT_NULL' || f.op === 'BETWEEN' || (f.value !== undefined && f.value !== '')))) c.user_filter = { column: String(f.column), op: f.op, value: f.value }
     else c.user_filter = null
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, id: c.id, user_filter: c.user_filter }
   }
   biApi['bi.getFilterValues'] = async (args) => {
@@ -379,7 +432,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     } catch (e) { return { error: String(e && e.message || e), values: [] } }
   }
   biApi['bi.setViewFilter'] = async (args) => {
-    const s = await readStore(fsv)
+    const s = await readStore()
     const view = (s.views || []).find(function (v) { return v.id === Number(args && args.viewId) })
     if (!view) return { error: 'view not found' }
     if (!view.filters) view.filters = []
@@ -390,10 +443,10 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     const valueless = op === 'IS_NULL' || op === 'IS_NOT_NULL'
     const hasVal = value !== undefined && value !== null && value !== '' && !(Array.isArray(value) && !value.length)
     if (column && (valueless || hasVal)) view.filters.push({ column: column, op: valueless ? op : (op || '='), value: valueless ? undefined : value })
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, viewId: view.id, filters: view.filters }
   }
-  biApi['bi.getChart'] = async (args) => { const s = await readStore(fsv); const c = (s.charts || []).find(function (x) { return x.id === args.id }); if (!c) return { error: 'not found' }; const extras = []
+  biApi['bi.getChart'] = async (args) => { const s = await readStore(); const c = (s.charts || []).find(function (x) { return x.id === args.id }); if (!c) return { error: 'not found' }; const extras = []
     const uf = c.user_filter
     if (uf && uf.column) { const uv = String(uf.value === undefined || uf.value === null ? '' : uf.value); const uop = uv.startsWith('\u0000!') ? '!=' : (uf.op || '='); extras.push({ column: uf.column, op: uop, value: uop === '!=' ? uv.slice(2) : uf.value }) }
     const exs = (args && args.extras) || (args && args.extra ? [args.extra] : [])
@@ -401,11 +454,13 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     rendered.filterable = (c.filterable && c.filterable.length) ? c.filterable : (function () { const cd = c.chart_def || {}; const cols = []; (cd.group_by || []).forEach(function (g2) { if (g2 && cols.indexOf(g2) < 0) cols.push(g2) }); (cd.metrics || []).forEach(function (m2) { if (m2 && m2.column && cols.indexOf(m2.column) < 0) cols.push(m2.column) }); return cols.slice(0, 8) })().map(function (f) { return { column: f, label: NAME_MAP_ZH.fields[f] || f } })
     rendered.table = c.chart_def ? c.chart_def.table : undefined
     return rendered }
-  biApi['bi.deleteChart'] = async (args) => { const s = await readStore(fsv); const id = String(args.id); const viewId = Number(args.viewId || 1); const c = (s.charts || []).find(function (x) { return x.id === id }); if (!c) return { error: 'not found' }; if (viewId === 1) { s.charts = (s.charts || []).filter(function (x) { return x.id !== id }) } else { if (c.view_ids) c.view_ids = c.view_ids.filter(function (v) { return v !== viewId }) }; await writeStore(fsv); return { ok: true } }
-  biApi['bi.addChartToView'] = async (args) => { const s = await readStore(fsv); const c = (s.charts || []).find(function (x) { return x.id === String(args.chartId) }); if (!c) return { error: 'not found' }; if (!c.view_ids) c.view_ids = [1]; if (c.view_ids.indexOf(Number(args.viewId)) < 0) c.view_ids.push(Number(args.viewId)); await writeStore(fsv); return { ok: true } }
+  biApi['bi.deleteChart'] = async (args) => { const s = await readStore(); const id = String(args.id); const viewId = Number(args.viewId || 1); const c = (s.charts || []).find(function (x) { return x.id === id }); if (!c) return { error: 'not found' }; if (viewId === 1) { s.charts = (s.charts || []).filter(function (x) { return x.id !== id }) } else { if (c.view_ids) c.view_ids = c.view_ids.filter(function (v) { return v !== viewId }) }; await queueStoreWrite(); return { ok: true } }
+  biApi['bi.addChartToView'] = async (args) => { const s = await readStore(); const c = (s.charts || []).find(function (x) { return x.id === String(args.chartId) }); if (!c) return { error: 'not found' }; if (!c.view_ids) c.view_ids = [1]; if (c.view_ids.indexOf(Number(args.viewId)) < 0) c.view_ids.push(Number(args.viewId)); await queueStoreWrite(); return { ok: true } }
   biApi['bi.getStatus'] = async (args) => {
     await cfgReady
     const out = {}
+    // 审计 C3：store 读失败置的只读标志透出，前端可据此提示"看板数据只读（存储损坏）"
+    if (storeReadonlyError) { out.store_readonly = true; out.store_readonly_error = storeReadonlyError }
     let sync = null
     if (CFG.statusUrl) {
       let st = null
@@ -418,7 +473,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
           let last = null
           if (CFG.crawlConfigFile) {
             try {
-              const t2 = await fsv.resolve(CFG.crawlConfigFile); const cfg = JSON.parse(await fsv.readText(t2))
+              const cfg = JSON.parse(await fsp.readFile(CFG.crawlConfigFile, 'utf8'))
               const pc = (cfg.pipelines || {}).cloud || {}
               interval = Math.max(1, parseInt(pc.interval_minutes, 10) || 15)
               last = (cfg.last_run || {}).cloud || null
@@ -440,7 +495,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   biApi['bi.update.check'] = async (args) => { try { return await updateCheckState(ctx) } catch (e) { return { repo: true, error: String(e && e.message || e) } } }
   // 「一键更新」委托共享内部函数 performUpdate（/bi-update 命令走同一条路径，行为完全一致）
   biApi['bi.update.run'] = async (args) => await performUpdate(ctx)
-  biApi['bi.reorderViews'] = async (args) => { const s = await readStore(fsv); const ids = (args.ids || []).map(Number); if (!ids.length) return { error: 'ids 不能为空' }; const byId = {}; (s.views || []).forEach(function (v) { byId[v.id] = v }); const reordered = []; ids.forEach(function (id) { if (byId[id]) { reordered.push(byId[id]); delete byId[id] } }); Object.keys(byId).forEach(function (id) { reordered.push(byId[id]) }); s.views = reordered; await writeStore(fsv); return { ok: true } }
+  biApi['bi.reorderViews'] = async (args) => { const s = await readStore(); const ids = (args.ids || []).map(Number); if (!ids.length) return { error: 'ids 不能为空' }; const byId = {}; (s.views || []).forEach(function (v) { byId[v.id] = v }); const reordered = []; ids.forEach(function (id) { if (byId[id]) { reordered.push(byId[id]); delete byId[id] } }); Object.keys(byId).forEach(function (id) { reordered.push(byId[id]) }); s.views = reordered; await queueStoreWrite(); return { ok: true } }
   const metaTool = defineTool({ name: 'get_meta', description: '获取无人超市数据库数据字典。', parameters: { subject: { type: 'string', enum: ['tables', 'relationships', 'columns'] }, table: { type: 'string' } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }] }, async execute(args, exec) { const subject = args.subject || 'tables'; if (subject === 'relationships') return await getJson(ctx, 'GET', '/api/meta/relationships'); if (subject === 'columns') { if (!args.table) throw new Error('需要 table'); return await getJson(ctx, 'GET', '/api/meta/table/' + encodeURIComponent(args.table)) } return await getJson(ctx, 'GET', '/api/meta/tables') } })
   ctx.tools.register(metaTool)
   const queryTool = defineTool({ name: 'query_data', description: '查询无人超市数据库原始数据。', parameters: { table: { type: 'string', required: true }, columns: { type: 'array', items: { type: 'string' } }, filters: { type: 'array', items: filterItem }, order_by: { type: 'array', items: { type: 'object', additionalProperties: true, properties: { column: { type: 'string', required: true }, desc: { type: 'boolean' } } } }, limit: { type: 'integer' }, offset: { type: 'integer' } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }] }, async execute(args, exec) { if (!args.table) throw new Error('需要 table 参数'); const payload = { table: args.table }; if (args.columns) payload.columns = args.columns; if (args.filters) payload.filters = args.filters; if (args.order_by) payload.order_by = args.order_by; payload.limit = args.limit || 20; payload.offset = args.offset || 0; return await getJson(ctx, 'POST', '/api/query', payload) } })
@@ -451,14 +506,14 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     parameters: { id: { type: 'string', required: true, description: '要修改的图表 id' }, chart_def: chartDef },
     output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已修改图表「' + (v.title || '') + '」(' + (v.type || '') + ')。' }] },
     async execute(args, exec) {
-      const s = await readStore(fsv)
+      const s = await readStore()
       const c = (s.charts || []).find(function (x) { return x.id === String(args.id) })
       if (!c) throw new Error('图表不存在: ' + args.id)
       const def = args.chart_def || {}
       if (!def.type || ['bar', 'line', 'pie', 'table', 'text', 'kpi'].indexOf(def.type) < 0) throw new Error('chart_def.type 无效')
       if (!def.title || !String(def.title).trim()) throw new Error('chart_def.title 不能为空')
       c.chart_def = def
-      await writeStore(fsv)
+      await queueStoreWrite()
       return { ok: true, id: c.id, title: def.title, type: def.type }
     }
   })
@@ -472,7 +527,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   biApi['bi.triggerLogin'] = async (args) => await forwardStatusPost('/runlogin')
   biApi['bi.triggerFeishuSync'] = async (args) => await forwardStatusPost('/runfeishu')
   biApi['bi.setChartLayout'] = async (args) => {
-    const s = await readStore(fsv)
+    const s = await readStore()
     const c = (s.charts || []).find(function (x) { return x.id === String(args && args.id) })
     if (!c) return { error: 'not found' }
     pushUndo(s)
@@ -480,20 +535,20 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     const h = Math.max(1, Math.min(6, parseInt(args && args.h, 10) || 2))
     c.layout = { w: w, h: h }
     s.layout_custom = true
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, id: c.id, layout: c.layout }
   }
   biApi['bi.setChartLayoutLock'] = async (args) => {
-    const s = await readStore(fsv)
+    const s = await readStore()
     const c = (s.charts || []).find(function (x) { return x.id === String(args && args.id) })
     if (!c) return { error: 'not found' }
     pushUndo(s)
     c.layout_locked = !!args.locked
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, id: c.id, layout_locked: c.layout_locked }
   }
   biApi['bi.setLayoutLock'] = async (args) => {
-    const s = await readStore(fsv)
+    const s = await readStore()
     pushUndo(s)
     const v = !!args.locked
     s.layout_locked = v
@@ -503,11 +558,11 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
         if ((c.view_ids || [1]).indexOf(view.id) >= 0) view.chart_locks[c.id] = v
       })
     })
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, layout_locked: s.layout_locked }
   }
   biApi['bi.reorderCharts'] = async (args) => {
-    const s = await readStore(fsv)
+    const s = await readStore()
     const ids = (args && args.ids || []).map(String)
     if (!ids.length) return { error: 'ids 必填' }
     pushUndo(s)
@@ -517,11 +572,11 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     Object.keys(byId).forEach(function (k) { rest.push(byId[k]) })
     s.charts = head.concat(rest)
     s.layout_custom = true
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, order: s.charts.map(function (c) { return c.id }) }
   }
   biApi['bi.setFreeLayout'] = async (args) => {
-    const s = await readStore(fsv)
+    const s = await readStore()
     const viewId = Number(args && args.viewId)
     if (viewId === 1) return { error: '「全部」视图保持三列式，不支持自由布局' }
     const view = (s.views || []).find(function (v) { return v.id === viewId })
@@ -534,11 +589,11 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
       Object.keys(args.posMap).forEach(function (k) { const p = args.posMap[k] || {}; clean[String(k)] = { x: Math.max(0, Math.round(p.x || 0)), y: Math.max(0, Math.round(p.y || 0)), w: Math.max(120, Math.round(p.w || 300)), h: Math.max(80, Math.round(p.h || 200)) } })
       if (Object.keys(clean).length) view.chart_pos = clean
     }
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, viewId: viewId, free_layout: view.free_layout }
   }
   biApi['bi.setChartPos'] = async (args) => {
-    const s = await readStore(fsv)
+    const s = await readStore()
     const viewId = Number(args && args.viewId)
     if (viewId === 1) return { error: '「全部」视图保持三列式' }
     const view = (s.views || []).find(function (v) { return v.id === viewId })
@@ -548,33 +603,33 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     const pos = args && args.pos || {}
     view.chart_pos[String(args.chartId)] = { x: Math.max(0, Math.round(pos.x || 0)), y: Math.max(0, Math.round(pos.y || 0)), w: Math.max(80, Math.round(pos.w || 300)), h: Math.max(60, Math.round(pos.h || 240)) }
     view.free_layout = true
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, pos: view.chart_pos[String(args.chartId)] }
   }
   biApi['bi.clearChartPos'] = async (args) => {
-    const s = await readStore(fsv)
+    const s = await readStore()
     const view = (s.views || []).find(function (v) { return v.id === Number(args && args.viewId) })
     if (!view) return { error: 'view not found' }
     const id = String(args && args.chartId)
     if (!view.chart_pos || !view.chart_pos[id]) return { ok: true, cleared: false }
     pushUndo(s)
     delete view.chart_pos[id]
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, cleared: true }
   }
   biApi['bi.setChartLockToggle'] = async (args) => {
-    const s = await readStore(fsv)
+    const s = await readStore()
     const view = (s.views || []).find(function (v) { return v.id === Number(args && args.viewId) })
     if (!view) return { error: 'view not found' }
     pushUndo(s)
     if (!view.chart_locks) view.chart_locks = {}
     const id = String(args && args.chartId)
     view.chart_locks[id] = args && args.locked !== undefined ? !!args.locked : !view.chart_locks[id]
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, chartId: id, locked: view.chart_locks[id] }
   }
   biApi['bi.resetViewLayout'] = async (args) => {
-    const s = await readStore(fsv)
+    const s = await readStore()
     const view = (s.views || []).find(function (v) { return v.id === Number(args && args.viewId) })
     if (!view) return { error: 'view not found' }
     pushUndo(s)
@@ -582,11 +637,11 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     view.chart_pos = {}
     view.chart_locks = {}
     s.charts = (s.charts || []).slice().sort(function (a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')) })
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, viewId: view.id, free_layout: false }
   }
   biApi['bi.undoLayout'] = async (args) => {
-    const s = await readStore(fsv)
+    const s = await readStore()
     const stack = s.undo_stack || []
     if (!stack.length) return { ok: false, reason: '没有可撤销的布局操作' }
     const entry = stack[stack.length - 1]
@@ -596,11 +651,11 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     s.layout_locked = !!snap.layout_locked
     const byId = {}; (s.charts || []).forEach(function (c) { byId[c.id] = c })
     const ordered = []
-    ;(snap.charts || []).forEach(function (cc) { const c = byId[cc.id]; if (!c) return; if (cc.layout) c.layout = { w: cc.layout.w, h: cc.layout.h }; else delete c.layout; c.layout_locked = !!cc.layout_locked; ordered.push(c); delete byId[cc.id] })
+    ;(snap.charts || []).forEach(function (cc) { const c = byId[cc.id]; if (!c) return; if (cc.layout) c.layout = { w: cc.layout.w, h: cc.layout.h }; else delete c.layout; c.layout_locked = !!cc.layout_locked; if (cc.def != null) { c.chart_def = JSON.parse(JSON.stringify(cc.def)); if (cc.title != null) c.title = cc.title; if (cc.type) c.type = cc.type } ordered.push(c); delete byId[cc.id] })
     Object.keys(byId).forEach(function (k) { ordered.push(byId[k]) })
     s.charts = ordered
     ;(snap.views || []).forEach(function (vv) { const v = (s.views || []).find(function (x) { return x.id === vv.id }); if (!v) return; v.free_layout = !!vv.free_layout; v.chart_pos = JSON.parse(JSON.stringify(vv.chart_pos || {})); v.chart_locks = JSON.parse(JSON.stringify(vv.chart_locks || {})) })
-    await writeStore(fsv)
+    await queueStoreWrite()
     return { ok: true, undoneAt: entry.at }
   }
   biApi['bi.getTableConfig'] = async (args) => {
@@ -609,7 +664,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     let lastErr = ''
     try { const r = await getJson(ctx, 'GET', '/api/settings/tables', undefined, 8000); tables = (r.tables || []).map(function (t) { const m = NAME_MAP_ZH.tables[t.table]; return m ? Object.assign({}, t, { title: t.title || m.zh, description: t.description || m.desc }) : t }) } catch (e) { unreachable = true; lastErr = String(e.message || e).slice(0, 120) }
     let pipelines = {}
-    try { const t = await fsv.resolve(CFG.crawlConfigFile); const cfg = JSON.parse(await fsv.readText(t)); pipelines = cfg.pipelines || {} } catch (e) { pipelines = {} }
+    try { const cfg = JSON.parse(await fsp.readFile(CFG.crawlConfigFile, 'utf8')); pipelines = cfg.pipelines || {} } catch (e) { pipelines = {} }
     return { tables: tables, pipelines: unreachable ? {} : pipelines, unreachable: unreachable, error: unreachable ? ('数据服务不可达：' + lastErr) : undefined }
   }
   biApi['bi.setTableAccess'] = async (args) => {
