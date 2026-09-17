@@ -9,15 +9,24 @@ const PKG_DIR = fileURLToPath(new URL('../', import.meta.url)).replace(/[\\/]+$/
 // 持久化目录（包外）：重装/升级 dsh-bi-dashboards 包不丢用户数据；可用环境变量 BI_DASHBOARDS_HOME 覆盖
 const PERSIST_DIR = String(process.env.BI_DASHBOARDS_HOME || (process.env.HOME + '/.dsh/bi-dashboards')).replace(/\/+$/, '')
 const ECHARTS_ROUTE = '/bi/vendor/echarts.min.js'
-let CFG = { dataApi: 'http://localhost:8600', statusUrl: 'http://localhost:8080', vendorFile: PERSIST_DIR + '/vendor/echarts.min.js', storeFile: PERSIST_DIR + '/data/bi-dashboards.json', crawlConfigFile: '' }
+// IPv4-safe defaults: web/server.py binds 127.0.0.1 (IPv4 only). Node fetch resolves
+// `localhost` to ::1 on dual-stack systems → connection refused. Use 127.0.0.1.
+let CFG = { dataApi: 'http://127.0.0.1:8600', statusUrl: 'http://127.0.0.1:8080', vendorFile: PERSIST_DIR + '/vendor/echarts.min.js', storeFile: PERSIST_DIR + '/data/bi-dashboards.json', crawlConfigFile: '' }
 let cfgReady = Promise.resolve()
 const NAME_MAP_ZH = { tables: { ai_settings: { zh: '数据服务设置', desc: 'AI 配置键值（表访问白名单等）' }, alert_subscriber: { zh: '预警订阅', desc: '邮件预警订阅人与审核状态' }, category_dim: { zh: '品类维度', desc: '品类编码到大类/中类的映射' }, date_dim: { zh: '日期维度', desc: '2022~2026 连续日历，含周末/节假日标记' }, forecast_results: { zh: '销量预测', desc: '按商品×门店×日期的模型预测销量及区间' }, forecast_monthly: { zh: '月度销量预测', desc: '每个商品本月份的预测总量(今天~月底逐日求和),每月 1 号更新' }, forecast_accuracy: { zh: '预测准确率', desc: '周度预测 vs 实际销量的准确率存档(每商品每周评估,1-加权MAPE×100)' }, forecast_history: { zh: '预测历史', desc: '每期周度预测快照存档(商品×日期×生成批次),在线表每周替换,历史在这里留底' }, inventory_total: { zh: '库存总览', desc: '仓库库存、货架现库存与安全库存线' }, n8n_operation_log: { zh: '运维日志', desc: 'n8n 自动化操作流水与 SQL 快照' }, order_detail_raw: { zh: '销售明细', desc: '每行一条订单商品，唯一大规模历史数据源' }, procurement_management: { zh: '采购管理', desc: '采购批次、数量、单价与保质期' }, procurement_management_bak_20260909: { zh: '采购管理备份', desc: '采购管理 2026-09-09 备份' }, product_main: { zh: '商品主档', desc: '商品条码、价格、状态与陈列标准' }, replenish_log: { zh: '补货日志', desc: '补货计划与实际执行记录' }, replenish_subscribe: { zh: '补货订阅', desc: '补货提醒邮件订阅' }, shelf_product_rel: { zh: '货架-商品关联', desc: '货架编号与商品条码的摆放关系' }, store_info: { zh: '门店信息', desc: '门店基础档案' }, store_stat_raw: { zh: '门店统计', desc: '门店统计原始数据' }, sync_meta: { zh: '同步元数据', desc: '各同步管道的最新同步时间' } }, fields: { item_id: '明细行编号', order_no: '订单号', user_id: '用户编号', store_id: '门店编号', original_amount: '原始金额', discount_total: '优惠总额', pay_amount: '实付金额', order_create_time: '下单时间', order_status: '订单状态', product_qty: '商品数量', product_price: '商品单价', order_date: '下单日期', product_id: '商品编号', product_name: '商品名称', cost_price: '成本价', standard_price: '标准售价', shelf_life_days: '保质期(天)', unit: '单位', product_status: '商品状态', cate_code: '品类编码', cate_name: '品类名称', big_category: '大类', mid_category: '中类', sort_no: '排序号', standard_put_qty: '标准陈列数量', inv_id: '库存记录编号', warehouse_stock: '仓库库存', shelf_current_stock: '货架现库存', safety_stock: '安全库存', stock_update_time: '库存更新时间', date: '日期', year: '年', quarter: '季度', month: '月份', week: '周序号', day: '日', year_month: '年月', is_weekend: '是否周末', is_holiday: '是否节假日', id: '编号', train_date: '生成批次', eval_date: '评估日期', period_start: '评估窗口起', period_end: '评估窗口止', evaluated_days: '评估天数', actual_qty: '实际销量', abs_error: '绝对误差', accuracy_pct: '准确率(%)', forecast_date: '预测日期', predicted_qty: '预测销量', predicted_lower: '预测下界', predicted_upper: '预测上界', model_generation_date: '模型生成时间', model_name: '模型名称', sub_id: '订阅编号', email: '邮箱', name: '姓名', department: '部门', status: '状态', token: '访问令牌', created_at: '创建时间', approved_at: '审核通过时间', approved_by: '审核人', cancelled_at: '取消时间', timestamp: '操作时间', operator: '操作人', operation: '操作类型', target_id: '操作对象编号', detail: '详情', sql_snapshot: 'SQL快照', procurement_id: '采购批次编号', pack_spec: '包装规格', quantity: '数量', unit_price: '单价', total_amount: '总金额', procurement_date: '采购日期', produce_date: '生产日期', expire_date: '到期日期', is_processed: '是否已处理', replenish_id: '补货记录编号', shelf_id: '货架编号', plan_repl_qty: '计划补货量', actual_repl_qty: '实际补货量', repl_type: '补货类型', repl_status: '补货状态', operator_name: '操作人姓名', finish_time: '完成时间', create_time: '创建时间', create_date: '创建日期', contact_email: '联系邮箱', subscribe_type: '订阅类型', rel_id: '关联记录编号', shelf_code: '货架编号', product_code: '商品条码', sync_key: '同步项', sync_value: '同步值', updated_at: '更新时间', key: '配置键', value: '配置值', warehouse: '仓库', category: '品类' } }
 // HTTP 层统一走全局 fetch（原 curl 子进程路径已删除：省去每请求一次进程 spawn 的开销与 curl 依赖）。
 // 非 2xx → 抛结构化 Error，携带 {status, body}（body 尽量解析为 JSON，失败保留截断文本）。
 // ctx 参数保留仅为兼容既有调用点签名，fetch 不再依赖 subprocess 服务。
+// 将 http(s)://localhost:PORT 归一化为 http(s)://127.0.0.1:PORT：
+// web/server.py 默认只绑 127.0.0.1（IPv4），而 Node 18 fetch 解析 localhost 可能命中 ::1（IPv6），
+// 导致请求被拒（倒计时环空白回归的根因）。仅改 host 部分；路径/端口/查询串原样保留；
+// https 同样归一化为 https://127.0.0.1（注意：若服务端证书是签给 localhost 的，会存在证书名不匹配的隐患）。
+function toIpv4Localhost(url) {
+  return String(url).replace(/^(https?):\/\/localhost(?=[:/?#]|$)/i, '$1://127.0.0.1')
+}
 async function callApi(ctx, method, path, body, timeoutMs) {
   await cfgReady
-  const url = path.indexOf('http') === 0 ? path : CFG.dataApi + path
+  const url = toIpv4Localhost(path.indexOf('http') === 0 ? path : CFG.dataApi + path)
   const init = { method, signal: AbortSignal.timeout(timeoutMs || 90000) }
   if (body !== undefined) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify(body) }
   let res
@@ -36,7 +45,7 @@ async function callApi(ctx, method, path, body, timeoutMs) {
 // 主机侧不再维护任何本地冷却时间戳——防重入的唯一事实源在 8080。
 async function forwardStatusPost(path) {
   await cfgReady
-  const url = String(CFG.statusUrl || '').replace(/\/+$/, '') + path
+  const url = toIpv4Localhost(String(CFG.statusUrl || '').replace(/\/+$/, '')) + path
   try {
     const r = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(8000) })
     const text = await r.text()
@@ -789,13 +798,13 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   biApi['bi.testConnection'] = async (args) => {
     const raw = String((args && args.url) || '').trim().replace(/\/+$/, '')
     if (!/^https?:\/\//.test(raw)) return { ok: false, error: '地址需以 http:// 或 https:// 开头' }
-    try { const r = await fetch(raw + '/api/meta/tables', { signal: AbortSignal.timeout(5000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status }; const j = await r.json(); return { ok: true, tables: (j.tables || []).length } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) } }
+    try { const r = await fetch(toIpv4Localhost(raw + '/api/meta/tables'), { signal: AbortSignal.timeout(5000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status }; const j = await r.json(); return { ok: true, tables: (j.tables || []).length } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) } }
   }
   biApi['bi.testStatus'] = async (args) => {
     const raw = String((args && args.url) || '').trim().replace(/\/+$/, '')
     if (!/^https?:\/\//.test(raw)) return { ok: false, error: '地址需以 http:// 或 https:// 开头' }
     const t0 = Date.now()
-    try { const r = await fetch(raw + '/status.json', { signal: AbortSignal.timeout(5000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status }; const j = await r.json(); return { ok: true, ms: Date.now() - t0, running: !!(j && j.running) } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) } }
+    try { const r = await fetch(toIpv4Localhost(raw + '/status.json'), { signal: AbortSignal.timeout(5000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status }; const j = await r.json(); return { ok: true, ms: Date.now() - t0, running: !!(j && j.running) } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) } }
   }
   // 5s 轮询只打轻量 GET /health（契约：{"status":"ok"}，DB-pinging）。
   // 不再打 /api/meta/tables——重查询被高频轮询拖垮数据服务是审计 C7 的根因。
@@ -804,7 +813,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     const t0 = Date.now()
     const url = String(CFG.dataApi || '').trim().replace(/\/+$/, '')
     if (!url) return { ok: false, error: '未配置数据主机地址', ms: Date.now() - t0 }
-    try { const r = await fetch(url + '/health', { signal: AbortSignal.timeout(4000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status, ms: Date.now() - t0 }; let j = null; try { j = await r.json() } catch (e) {}; if (j && j.status && j.status !== 'ok') return { ok: false, error: 'unhealthy: ' + String(j.status), ms: Date.now() - t0 }; return { ok: true, ms: Date.now() - t0 } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200), ms: Date.now() - t0 } }
+    try { const r = await fetch(toIpv4Localhost(url + '/health'), { signal: AbortSignal.timeout(4000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status, ms: Date.now() - t0 }; let j = null; try { j = await r.json() } catch (e) {}; if (j && j.status && j.status !== 'ok') return { ok: false, error: 'unhealthy: ' + String(j.status), ms: Date.now() - t0 }; return { ok: true, ms: Date.now() - t0 } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200), ms: Date.now() - t0 } }
   }
   console.log('[bi] Phase5 Host 已加载 (static v1)')
   if (ws) ctx.effect(() => ws.register({ kind: 'exact', path: '/bi/api', handler: async (req, res) => {
