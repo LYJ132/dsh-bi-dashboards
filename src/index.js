@@ -1,14 +1,48 @@
 // 无人超市 AI BI 插件 — Host 半部（全局静态化 v1：由动态插件 v20 适配而来）
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
-const PKG_DIR = new URL('../', import.meta.url).pathname.replace(/\/$/, '')
+import { existsSync, readFileSync, realpathSync, promises as fsp } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname } from 'node:path'
+// PKG_DIR 必须走 fileURLToPath：URL.pathname 不做 percent 解码（含空格/中文的路径会 404），
+// Windows 下还会产生盘符前斜杠（/D:/...），readFileSync 直接失败。
+const PKG_DIR = fileURLToPath(new URL('../', import.meta.url)).replace(/[\\/]+$/, '')
 // 持久化目录（包外）：重装/升级 dsh-bi-dashboards 包不丢用户数据；可用环境变量 BI_DASHBOARDS_HOME 覆盖
 const PERSIST_DIR = String(process.env.BI_DASHBOARDS_HOME || (process.env.HOME + '/.dsh/bi-dashboards')).replace(/\/+$/, '')
 const ECHARTS_ROUTE = '/bi/vendor/echarts.min.js'
 let CFG = { dataApi: 'http://localhost:8600', statusUrl: 'http://localhost:8080', vendorFile: PERSIST_DIR + '/vendor/echarts.min.js', storeFile: PERSIST_DIR + '/data/bi-dashboards.json', crawlConfigFile: '' }
 let cfgReady = Promise.resolve()
 const NAME_MAP_ZH = { tables: { ai_settings: { zh: '数据服务设置', desc: 'AI 配置键值（表访问白名单等）' }, alert_subscriber: { zh: '预警订阅', desc: '邮件预警订阅人与审核状态' }, category_dim: { zh: '品类维度', desc: '品类编码到大类/中类的映射' }, date_dim: { zh: '日期维度', desc: '2022~2026 连续日历，含周末/节假日标记' }, forecast_results: { zh: '销量预测', desc: '按商品×门店×日期的模型预测销量及区间' }, forecast_monthly: { zh: '月度销量预测', desc: '每个商品本月份的预测总量(今天~月底逐日求和),每月 1 号更新' }, forecast_accuracy: { zh: '预测准确率', desc: '周度预测 vs 实际销量的准确率存档(每商品每周评估,1-加权MAPE×100)' }, forecast_history: { zh: '预测历史', desc: '每期周度预测快照存档(商品×日期×生成批次),在线表每周替换,历史在这里留底' }, inventory_total: { zh: '库存总览', desc: '仓库库存、货架现库存与安全库存线' }, n8n_operation_log: { zh: '运维日志', desc: 'n8n 自动化操作流水与 SQL 快照' }, order_detail_raw: { zh: '销售明细', desc: '每行一条订单商品，唯一大规模历史数据源' }, procurement_management: { zh: '采购管理', desc: '采购批次、数量、单价与保质期' }, procurement_management_bak_20260909: { zh: '采购管理备份', desc: '采购管理 2026-09-09 备份' }, product_main: { zh: '商品主档', desc: '商品条码、价格、状态与陈列标准' }, replenish_log: { zh: '补货日志', desc: '补货计划与实际执行记录' }, replenish_subscribe: { zh: '补货订阅', desc: '补货提醒邮件订阅' }, shelf_product_rel: { zh: '货架-商品关联', desc: '货架编号与商品条码的摆放关系' }, store_info: { zh: '门店信息', desc: '门店基础档案' }, store_stat_raw: { zh: '门店统计', desc: '门店统计原始数据' }, sync_meta: { zh: '同步元数据', desc: '各同步管道的最新同步时间' } }, fields: { item_id: '明细行编号', order_no: '订单号', user_id: '用户编号', store_id: '门店编号', original_amount: '原始金额', discount_total: '优惠总额', pay_amount: '实付金额', order_create_time: '下单时间', order_status: '订单状态', product_qty: '商品数量', product_price: '商品单价', order_date: '下单日期', product_id: '商品编号', product_name: '商品名称', cost_price: '成本价', standard_price: '标准售价', shelf_life_days: '保质期(天)', unit: '单位', product_status: '商品状态', cate_code: '品类编码', cate_name: '品类名称', big_category: '大类', mid_category: '中类', sort_no: '排序号', standard_put_qty: '标准陈列数量', inv_id: '库存记录编号', warehouse_stock: '仓库库存', shelf_current_stock: '货架现库存', safety_stock: '安全库存', stock_update_time: '库存更新时间', date: '日期', year: '年', quarter: '季度', month: '月份', week: '周序号', day: '日', year_month: '年月', is_weekend: '是否周末', is_holiday: '是否节假日', id: '编号', train_date: '生成批次', eval_date: '评估日期', period_start: '评估窗口起', period_end: '评估窗口止', evaluated_days: '评估天数', actual_qty: '实际销量', abs_error: '绝对误差', accuracy_pct: '准确率(%)', forecast_date: '预测日期', predicted_qty: '预测销量', predicted_lower: '预测下界', predicted_upper: '预测上界', model_generation_date: '模型生成时间', model_name: '模型名称', sub_id: '订阅编号', email: '邮箱', name: '姓名', department: '部门', status: '状态', token: '访问令牌', created_at: '创建时间', approved_at: '审核通过时间', approved_by: '审核人', cancelled_at: '取消时间', timestamp: '操作时间', operator: '操作人', operation: '操作类型', target_id: '操作对象编号', detail: '详情', sql_snapshot: 'SQL快照', procurement_id: '采购批次编号', pack_spec: '包装规格', quantity: '数量', unit_price: '单价', total_amount: '总金额', procurement_date: '采购日期', produce_date: '生产日期', expire_date: '到期日期', is_processed: '是否已处理', replenish_id: '补货记录编号', shelf_id: '货架编号', plan_repl_qty: '计划补货量', actual_repl_qty: '实际补货量', repl_type: '补货类型', repl_status: '补货状态', operator_name: '操作人姓名', finish_time: '完成时间', create_time: '创建时间', create_date: '创建日期', contact_email: '联系邮箱', subscribe_type: '订阅类型', rel_id: '关联记录编号', shelf_code: '货架编号', product_code: '商品条码', sync_key: '同步项', sync_value: '同步值', updated_at: '更新时间', key: '配置键', value: '配置值', warehouse: '仓库', category: '品类' } }
-async function callApi(ctx, method, path, body, timeoutMs) { await cfgReady; const sub = ctx.get('subprocess'); if (!sub) throw new Error('subprocess 服务不可用'); const url = path.indexOf('http') === 0 ? path : CFG.dataApi + path; let argv = ['curl', '-s', '-m', String(Math.ceil((timeoutMs || 90000) / 1000)), '-X', method, url]; if (body !== undefined) argv = argv.concat(['-H', 'Content-Type: application/json', '-d', JSON.stringify(body)]); const handle = sub.spawn({ argv, cwd: '/tmp', stdio: { stdin: 'ignore', stdout: { maxBytes: 64 * 1024 * 1024 }, stderr: { maxBytes: 2 * 1024 * 1024 } }, graceMs: 15000 }); await handle.done; const out = handle.collected.stdout.readFrom(0).text; const err = handle.collected.stderr.readFrom(0).text; if (!out && err) throw new Error('数据服务请求失败: ' + err.slice(0, 300)); return out }
+// HTTP 层统一走全局 fetch（原 curl 子进程路径已删除：省去每请求一次进程 spawn 的开销与 curl 依赖）。
+// 非 2xx → 抛结构化 Error，携带 {status, body}（body 尽量解析为 JSON，失败保留截断文本）。
+// ctx 参数保留仅为兼容既有调用点签名，fetch 不再依赖 subprocess 服务。
+async function callApi(ctx, method, path, body, timeoutMs) {
+  await cfgReady
+  const url = path.indexOf('http') === 0 ? path : CFG.dataApi + path
+  const init = { method, signal: AbortSignal.timeout(timeoutMs || 90000) }
+  if (body !== undefined) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify(body) }
+  let res
+  try { res = await fetch(url, init) } catch (e) { throw new Error('数据服务请求失败: ' + String((e && e.message) || e).slice(0, 200)) }
+  const text = await res.text()
+  if (!res.ok) {
+    let parsed = text.slice(0, 500)
+    try { parsed = JSON.parse(text) } catch (e) {}
+    const err = new Error('数据服务 HTTP ' + res.status + ': ' + String(text).slice(0, 200))
+    err.status = res.status; err.body = parsed
+    throw err
+  }
+  return text
+}
+// 8080 状态服务透传 POST：响应体原样返回（含 409 的 {"busy":true}/{"status":"busy"}/{"status":"paused"}），
+// 主机侧不再维护任何本地冷却时间戳——防重入的唯一事实源在 8080。
+async function forwardStatusPost(path) {
+  await cfgReady
+  const url = String(CFG.statusUrl || '').replace(/\/+$/, '') + path
+  try {
+    const r = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(8000) })
+    const text = await r.text()
+    try { return JSON.parse(text || '{}') } catch (e) { return r.ok ? { ok: true } : { error: 'HTTP ' + r.status + ': ' + text.slice(0, 200) } }
+  } catch (e) { return { error: '状态服务请求失败: ' + String((e && e.message) || e).slice(0, 200) } }
+}
 async function getJson(ctx, method, path, body, timeoutMs) { const text = await callApi(ctx, method, path, body, timeoutMs); try { return JSON.parse(text) } catch (e) { throw new Error('数据服务返回非 JSON: ' + String(text).slice(0, 200)) } }
 // ===== 插件自更新（双形态统一入口）：git 仓库安装走 git fetch / pull --ff-only + node scripts/build.mjs；
 // github: 快照安装（非 git）走 DSH 原生刷新 dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards =====
@@ -402,7 +436,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     if (sync) { Object.assign(out, sync); out.offline = false } else { out.offline = true }
     return out
   }
-  biApi['bi.triggerSync'] = async (args) => { try { const t = await callApi(ctx, 'POST', CFG.statusUrl + '/run', undefined, 8000); try { return JSON.parse(t) } catch (e2) { return { ok: true } } } catch (e) { return { error: String(e && e.message || e) } } }
+  biApi['bi.triggerSync'] = async (args) => await forwardStatusPost('/run')
   biApi['bi.update.check'] = async (args) => { try { return await updateCheckState(ctx) } catch (e) { return { repo: true, error: String(e && e.message || e) } } }
   // 「一键更新」委托共享内部函数 performUpdate（/bi-update 命令走同一条路径，行为完全一致）
   biApi['bi.update.run'] = async (args) => await performUpdate(ctx)
@@ -433,20 +467,10 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   // 用 ctx.effect 持有 register 返回的 disposer，插件卸载时反注册（dsh-mnemon/plan-mode 同款）
   ctx.effect(() => ctx.commands.register(createBiUpdateCommand(ctx)))
   ctx.effect(() => ctx.commands.register(createBiCreateCommand()))
-  let loginSpawnedAt = 0
-  biApi['bi.triggerLogin'] = async (args) => {
-    const nowMs = Date.now()
-    if (nowMs - loginSpawnedAt < 15 * 60 * 1000) return { ok: false, error: '登录流程已在进行中（15 分钟窗口内）' }
-    loginSpawnedAt = nowMs
-    return await getJson(ctx, 'POST', CFG.statusUrl + '/runlogin', undefined, 8000)
-  }
-  let feishuSyncSpawnedAt = 0
-  biApi['bi.triggerFeishuSync'] = async (args) => {
-    const nowMs = Date.now()
-    if (nowMs - feishuSyncSpawnedAt < 5 * 60 * 1000) return { ok: false, error: '飞书同步已在进行中（5 分钟窗口内）' }
-    feishuSyncSpawnedAt = nowMs
-    return await getJson(ctx, 'POST', CFG.statusUrl + '/runfeishu', undefined, 8000)
-  }
+  // 登录/飞书同步触发：主机侧本地冷却时间戳已删除（多实例/重启会绕过冷却，且与 8080 的
+  // _inflight 状态机双轨冲突）。防重入完全交给 8080：忙时它返回 {"busy":true}/409，这里原样透传给客户端。
+  biApi['bi.triggerLogin'] = async (args) => await forwardStatusPost('/runlogin')
+  biApi['bi.triggerFeishuSync'] = async (args) => await forwardStatusPost('/runfeishu')
   biApi['bi.setChartLayout'] = async (args) => {
     const s = await readStore(fsv)
     const c = (s.charts || []).find(function (x) { return x.id === String(args && args.id) })
@@ -632,19 +656,27 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     const t0 = Date.now()
     try { const r = await fetch(raw + '/status.json', { signal: AbortSignal.timeout(5000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status }; const j = await r.json(); return { ok: true, ms: Date.now() - t0, running: !!(j && j.running) } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200) } }
   }
+  // 5s 轮询只打轻量 GET /health（契约：{"status":"ok"}，DB-pinging）。
+  // 不再打 /api/meta/tables——重查询被高频轮询拖垮数据服务是审计 C7 的根因。
   biApi['bi.ping'] = async () => {
     await cfgReady
     const t0 = Date.now()
     const url = String(CFG.dataApi || '').trim().replace(/\/+$/, '')
     if (!url) return { ok: false, error: '未配置数据主机地址', ms: Date.now() - t0 }
-    try { const r = await fetch(url + '/api/meta/tables', { signal: AbortSignal.timeout(4000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status, ms: Date.now() - t0 }; return { ok: true, ms: Date.now() - t0 } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200), ms: Date.now() - t0 } }
+    try { const r = await fetch(url + '/health', { signal: AbortSignal.timeout(4000) }); if (!r.ok) return { ok: false, error: 'HTTP ' + r.status, ms: Date.now() - t0 }; let j = null; try { j = await r.json() } catch (e) {}; if (j && j.status && j.status !== 'ok') return { ok: false, error: 'unhealthy: ' + String(j.status), ms: Date.now() - t0 }; return { ok: true, ms: Date.now() - t0 } } catch (e) { return { ok: false, error: String((e && e.message) || e).slice(0, 200), ms: Date.now() - t0 } }
   }
   console.log('[bi] Phase5 Host 已加载 (static v1)')
   if (ws) ctx.effect(() => ws.register({ kind: 'exact', path: '/bi/api', handler: async (req, res) => {
     await cfgReady
     if (req.method !== 'POST') { res.writeHead(405, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'method not allowed' })); return }
-    let body = ''
-    try { for await (const chunk of req) body += chunk } catch (e) {}
+    // 体积上限 1MB：在流式读取过程中按字节计数，超限立即断流返回 413（不允许先累积后检查）
+    const MAX_BODY_BYTES = 1024 * 1024
+    const chunks = []
+    let received = 0
+    let tooLarge = false
+    try { for await (const chunk of req) { received += chunk.length; if (received > MAX_BODY_BYTES) { tooLarge = true; break } chunks.push(chunk) } } catch (e) {}
+    if (tooLarge) { res.writeHead(413, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'request body too large (>1MB)' })); return }
+    const body = Buffer.concat(chunks).toString('utf8')
     let parsed = {}
     try { parsed = JSON.parse(body || '{}') } catch (e) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'bad json' })); return }
     const m = String(parsed.m || '')
