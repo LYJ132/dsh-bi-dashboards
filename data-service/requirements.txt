@@ -1,4 +1,8 @@
-fastapi>=0.115.0
-uvicorn>=0.30.0
-asyncpg>=0.30.0
-fastmcp>=3.0.0
+# 运行时依赖（精确锁定版本，保证容器构建可复现；审计 B?: 原仅 4 个 >= 约束且缺 pydantic-settings）
+# 更新流程：改动后 `pip-compile`/重跑 venv 校验后同步此处与 requirements-dev.txt。
+fastapi==0.141.1
+uvicorn==0.53.0
+asyncpg==0.31.0
+fastmcp==4.0.4
+pydantic==2.13.5
+pydantic-settings==2.15.0
