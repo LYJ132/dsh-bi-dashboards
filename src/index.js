@@ -173,15 +173,26 @@ function createBiCreateCommand() {
     }
   }
 }
-function aggregate(rows, chart) { const gb = chart.group_by || []; const metrics = chart.metrics || []; const groups = new Map(); for (const row of rows) { const key = gb.map(c => String(row[c] == null ? '' : row[c])).join('\u0001'); let g = groups.get(key); if (!g) { g = { gvals: gb.map(c => (row[c] == null ? '' : row[c])), sum: metrics.map(() => 0), count: metrics.map(() => 0), min: metrics.map(() => Infinity), max: metrics.map(() => -Infinity) }; groups.set(key, g) }; metrics.forEach((m, i) => { const v = Number(row[m.column]); if (Number.isFinite(v)) { g.sum[i] += v; g.count[i] += 1; if (v < g.min[i]) g.min[i] = v; if (v > g.max[i]) g.max[i] = v } }) }; let out = []; for (const g of groups.values()) { const r = {}; gb.forEach((c, i) => { r[c] = g.gvals[i] }); metrics.forEach((m, i) => { let val; if (m.agg === 'count') val = g.count[i]; else if (m.agg === 'avg') val = g.count[i] ? g.sum[i] / g.count[i] : 0; else if (m.agg === 'min') val = g.count[i] ? g.min[i] : 0; else if (m.agg === 'max') val = g.count[i] ? g.max[i] : 0; else val = g.sum[i]; r[m.alias] = Math.round(val * 100) / 100 }); out.push(r) }; if (chart.sort && chart.sort.by) { const by = chart.sort.by, desc = chart.sort.desc !== false; out = out.sort((a, b) => desc ? (Number(b[by]) - Number(a[by])) : (Number(a[by]) - Number(b[by]))) }; if (chart.limit) out = out.slice(0, chart.limit); return out }
+// 审计 C13 排序比较器：数值对按数值比；否则两值都可被 Date.parse 解析时按时间比；兜底 localeCompare
+function cmpVal(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  const na = a === '' || a == null ? NaN : Number(a), nb = b === '' || b == null ? NaN : Number(b)
+  if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb
+  const sa = a == null ? '' : String(a), sb = b == null ? '' : String(b)
+  if (/\d/.test(sa) && /\d/.test(sb)) { const ta = Date.parse(sa), tb = Date.parse(sb); if (!Number.isNaN(ta) && !Number.isNaN(tb)) return ta - tb }
+  return sa.localeCompare(sb)
+}
+function aggregate(rows, chart) { const gb = chart.group_by || []; const metrics = chart.metrics || []; const groups = new Map(); for (const row of rows) { const key = gb.map(c => String(row[c] == null ? '' : row[c])).join('\u0001'); let g = groups.get(key); if (!g) { g = { gvals: gb.map(c => (row[c] == null ? '' : row[c])), sum: metrics.map(() => 0), n: metrics.map(() => 0), vn: metrics.map(() => 0), min: metrics.map(() => Infinity), max: metrics.map(() => -Infinity) }; groups.set(key, g) }; metrics.forEach((m, i) => { g.n[i] += 1; const v = Number(row[m.column]); if (Number.isFinite(v)) { g.sum[i] += v; g.vn[i] += 1; if (v < g.min[i]) g.min[i] = v; if (v > g.max[i]) g.max[i] = v } }) }; let out = []; for (const g of groups.values()) { const r = {}; gb.forEach((c, i) => { r[c] = g.gvals[i] }); metrics.forEach((m, i) => { let val; if (m.agg === 'count') val = g.n[i]; else if (m.agg === 'avg') val = g.vn[i] ? g.sum[i] / g.vn[i] : 0; else if (m.agg === 'min') val = g.vn[i] ? g.min[i] : 0; else if (m.agg === 'max') val = g.vn[i] ? g.max[i] : 0; else val = g.sum[i]; r[m.alias] = Math.round(val * 100) / 100 }); out.push(r) }; if (chart.sort && chart.sort.by) { const by = chart.sort.by, desc = chart.sort.desc !== false; out = out.sort((a, b) => { const c = cmpVal(a[by], b[by]); return desc ? -c : c }) }; if (chart.limit) out = out.slice(0, chart.limit); return out }
 function buildOption(chart, rows) { if (chart.type === 'text') return { type: 'text', title: chart.title, text: chart.text || '' }; const metric = chart.metrics && chart.metrics[0]; const gb = (chart.group_by || [])[0]; if (chart.type === 'table') { const tcols = rows.length ? Object.keys(rows[0]) : []; const tl = {}; tcols.forEach(function (c2) { tl[c2] = NAME_MAP_ZH.fields[c2] || c2 }); return { type: 'table', title: chart.title, columns: tcols, columnLabels: tl, rows } } if (chart.type === 'kpi') return { type: 'kpi', title: chart.title, value: rows.length && metric ? rows[0][metric.alias] : null }; const names = rows.map(r => String(r[gb] != null ? r[gb] : '')); const vals = rows.map(r => Number(metric ? r[metric.alias] : 0)); if (chart.type === 'pie') return { type: 'pie', title: chart.title, series: [{ type: 'pie', radius: ['30%', '65%'], data: rows.map((r, i) => ({ name: names[i], value: vals[i] })) }] }; return { type: chart.type, title: chart.title, xAxis: { type: 'category', data: names, axisLabel: { rotate: 30, interval: 0 } }, yAxis: { type: 'value' }, series: [{ type: chart.type, data: vals, name: metric ? metric.alias : '' }] } }
-function neededColumns(chart) { const s = new Set(); (chart.group_by || []).forEach(c => s.add(c)); (chart.metrics || []).forEach(m => m.column && s.add(m.column)); (chart.filters || []).forEach(f => f.column && s.add(f.column)); return Array.from(s) }
+function neededColumns(chart) { const s = new Set(); (chart.group_by || []).forEach(c => s.add(c)); (chart.metrics || []).forEach(m => m.column && s.add(m.column)); (chart.filters || []).forEach(f => f.column && s.add(f.column)); const tc = chart.time_column || (chart.granularity === 'month' ? 'order_date' : null); if (tc) s.add(tc); return Array.from(s) }
 async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'text') return { type: 'text', title: chart.title || '', text: chart.text || '' }; const payload = { table: chart.table, filters: (chart.filters || []).concat(extraFilters || []), limit: 200000 }; const cols = neededColumns(chart); if (cols.length) payload.columns = cols; const data = await getJson(ctx, 'POST', '/api/query', payload); const rows = data.rows || []
   if (chart.granularity === 'month') {
+    // 审计 C13：月度聚合按图表 time_column 分组（缺省 order_date），不再硬编码 r.order_date
+    const tc = chart.time_column || 'order_date'
     const mdefs = chart.metrics || []
     const daily = {}
     rows.forEach(function (r) {
-      const d = r.order_date ? String(r.order_date).slice(0, 10) : ''
+      const d = r[tc] ? String(r[tc]).slice(0, 10) : ''
       if (!d) return
       if (!daily[d]) { daily[d] = {}; mdefs.forEach(function (mm) { daily[d][mm.alias] = 0 }) }
       mdefs.forEach(function (mm) {
@@ -200,9 +211,51 @@ async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'te
     return { type: chart.type, title: chart.title || '', option: buildOption(chart, rowsM), rows: rowsM }
   }
   let agg = rows; if (chart.type !== 'table' || (chart.group_by && chart.group_by.length)) agg = aggregate(rows, chart); return { type: chart.type, title: chart.title || '', option: buildOption(chart, agg), rows: agg } }
-const filterItem = { type: 'object', additionalProperties: true, properties: { column: { type: 'string', required: true }, op: { type: 'string', required: true, enum: ['=', '!=', '>', '>=', '<', '<=', 'IN', 'NOT_IN', 'LIKE', 'ILIKE', 'BETWEEN', 'IS_NULL', 'IS_NOT_NULL'] }, value: { type: 'json' } } }
-const metricItem = { type: 'object', additionalProperties: true, properties: { column: { type: 'string', required: true }, agg: { type: 'string', required: true, enum: ['sum', 'count', 'avg', 'min', 'max'] }, alias: { type: 'string', required: true } } }
-const chartDef = { type: 'object', additionalProperties: true, properties: { type: { type: 'string', required: true, enum: ['bar', 'line', 'pie', 'table', 'text', 'kpi'] }, title: { type: 'string', required: true }, table: { type: 'string' }, filters: { type: 'array', items: filterItem }, group_by: { type: 'array', items: { type: 'string' } }, metrics: { type: 'array', items: metricItem }, sort: { type: 'object', additionalProperties: true, properties: { by: { type: 'string' }, desc: { type: 'boolean' } } }, limit: { type: 'integer' }, text: { type: 'string' }, granularity: { type: 'string', enum: ['day', 'month'] } } }
+// ===== 图表定义校验（审计 C12）=====
+// 决策：现在就收紧校验（多指标一律拒绝并给出明确修复指引），渲染能力后补。
+// 核心键一律 additionalProperties:false，杜绝拼写错误的键静默生效；
+// time_column 纳入定义，供月粒度聚合与取数列使用（缺省 order_date）。
+const filterItem = { type: 'object', additionalProperties: false, properties: { column: { type: 'string', required: true }, op: { type: 'string', required: true, enum: ['=', '!=', '>', '>=', '<', '<=', 'IN', 'NOT_IN', 'LIKE', 'ILIKE', 'BETWEEN', 'IS_NULL', 'IS_NOT_NULL'] }, value: { type: 'json' } } }
+const metricItem = { type: 'object', additionalProperties: false, properties: { column: { type: 'string', required: true }, agg: { type: 'string', required: true, enum: ['sum', 'count', 'avg', 'min', 'max'] }, alias: { type: 'string', required: true } } }
+const chartDef = { type: 'object', additionalProperties: false, properties: { type: { type: 'string', required: true, enum: ['bar', 'line', 'pie', 'table', 'text', 'kpi'] }, title: { type: 'string', required: true }, table: { type: 'string', required: true }, filters: { type: 'array', items: filterItem }, group_by: { type: 'array', items: { type: 'string' } }, metrics: { type: 'array', minItems: 1, maxItems: 1, items: metricItem }, sort: { type: 'object', additionalProperties: false, properties: { by: { type: 'string' }, desc: { type: 'boolean' } } }, limit: { type: 'integer' }, text: { type: 'string' }, granularity: { type: 'string', enum: ['day', 'month'] }, time_column: { type: 'string' } } }
+const CHART_TYPES = ['bar', 'line', 'pie', 'table', 'text', 'kpi']
+const CHART_KEYS = ['type', 'title', 'table', 'filters', 'group_by', 'metrics', 'sort', 'limit', 'text', 'granularity', 'time_column']
+// JS 侧执行同一套约束并输出人类/模型可读的中文错误；text 图不取数，豁免 table/metrics。
+function validateChartDef(def, tag) {
+  const errs = []
+  if (!def || typeof def !== 'object' || Array.isArray(def)) return [tag + ': 必须是对象']
+  Object.keys(def).forEach(function (k) { if (CHART_KEYS.indexOf(k) < 0) errs.push(tag + ': 未知字段 "' + k + '"（允许: ' + CHART_KEYS.join(', ') + '）') })
+  if (CHART_TYPES.indexOf(def.type) < 0) errs.push(tag + ': type 必须为 ' + CHART_TYPES.join('/'))
+  if (!def.title || !String(def.title).trim()) errs.push(tag + ': title 必填')
+  if (def.sort !== undefined && def.sort !== null) {
+    if (typeof def.sort !== 'object' || Array.isArray(def.sort)) errs.push(tag + ': sort 必须是对象')
+    else Object.keys(def.sort).forEach(function (k) { if (['by', 'desc'].indexOf(k) < 0) errs.push(tag + ': sort 含未知字段 "' + k + '"') })
+  }
+  if (def.type !== 'text') {
+    if (!def.table || !String(def.table).trim()) errs.push(tag + ': table 必填（图表必须绑定数据表）')
+    const ms = def.metrics
+    if (!Array.isArray(ms) || ms.length === 0) errs.push(tag + ': metrics 必填，至少 1 个指标引用（{column, agg, alias}）')
+    else if (ms.length > 1) errs.push(tag + ': 暂不支持多指标图表（检测到 ' + ms.length + ' 个指标，当前只允许 1 个）。请把每个指标拆成独立图表。')
+    if (Array.isArray(ms)) ms.forEach(function (m, i) {
+      if (!m || typeof m !== 'object') { errs.push(tag + ': metrics[' + i + '] 必须是对象'); return }
+      Object.keys(m).forEach(function (k) { if (['column', 'agg', 'alias'].indexOf(k) < 0) errs.push(tag + ': metrics[' + i + '] 含未知字段 "' + k + '"') })
+      if (!m.column) errs.push(tag + ': metrics[' + i + '].column 必填')
+      if (['sum', 'count', 'avg', 'min', 'max'].indexOf(m.agg) < 0) errs.push(tag + ': metrics[' + i + '].agg 必须为 sum/count/avg/min/max')
+      if (!m.alias) errs.push(tag + ': metrics[' + i + '].alias 必填')
+    })
+    if (def.filters !== undefined && !Array.isArray(def.filters)) errs.push(tag + ': filters 必须是数组')
+    if (Array.isArray(def.filters)) def.filters.forEach(function (f, i) {
+      if (!f || typeof f !== 'object' || !f.column || !f.op) errs.push(tag + ': filters[' + i + '] 必须含 column/op')
+    })
+    if (def.group_by !== undefined && (!Array.isArray(def.group_by) || def.group_by.some(function (g) { return typeof g !== 'string' || !g }))) errs.push(tag + ': group_by 必须是非空列名字符串数组')
+  }
+  return errs
+}
+function assertChartDefs(defs, prefix) {
+  const all = []
+  ;(defs || []).forEach(function (d, i) { const t = prefix + (i) + (d && d.title ? '「' + d.title + '」' : ''); validateChartDef(d, t).forEach(function (m) { if (all.indexOf(m) < 0) all.push(m) }) })
+  if (all.length) throw new Error('图表定义校验失败：\n- ' + all.join('\n- '))
+}
 // ===== Store 层（审计 C1-C3）=====
 // 单一 async 写队列：所有落盘经 queueStoreWrite 串行，杜绝并发 writeText 交叠出半截文件；
 // 真正写盘用 temp 文件 + rename 原子替换（rename 同分区原子）。写错误抛给 RPC 调用方，不再吞掉。
@@ -307,8 +360,8 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     ;['vendorFile', 'storeFile', 'crawlConfigFile'].forEach(function (k) { if (CFG[k] && CFG[k].charAt(0) !== '/' && CFG[k].indexOf('://') < 0) CFG[k] = PERSIST_DIR + '/' + CFG[k] })
   })()
   const ws = ctx.get('webServer'); const fsv = ctx.get('fs'); const biApi = {}; if (ws && fsv) ctx.effect(() => ws.register({ kind: 'exact', path: ECHARTS_ROUTE, handler: async (req, res) => { try { await cfgReady; const t = await fsv.resolve(CFG.vendorFile); const buf = await fsv.readBytes(t, undefined, 4 * 1024 * 1024); res.setHeader('Content-Type', 'application/javascript'); res.setHeader('Cache-Control', 'public, max-age=3600'); res.writeHead(200); res.end(buf) } catch (e) { try { res.writeHead(404); res.end('not found') } catch (e2) {} } },}))
-  ctx.systemPrompt.section({ name: 'unmanned-store:dashboard-schema', order: 160, text: '【看板 Dashboard 生成】\n1. 调用 render_dashboard 生成看板（传入结构化 schema，顶层含 title/description/charts；销售必须 filters order_status=1；趋势图加时间过滤；字段来自 get_meta）。月度汇总柱状图可在图表定义里加 granularity:"month"（group_by 仍写 order_date，Host 会按日聚合后合并为月）。\n2. 生成后，工具结果会给出本次预览ID（previewId）。用一句话总结看板要点，并在回复【最后】追加 dsh-ui 围栏，ID 必须使用本次返回的 previewId（每个看板一个独立ID，互不覆盖）：\n```\ndsh-ui\n{"kind":"dashboard","id":"<previewId>"}\n```\n3. 然后询问用户是否保存到「我的看板」，确认后调用 save_dashboard 工具。也可以让用户直接点预览卡片里每个图表旁的「保存」按钮单独保存。' })
-  const renderTool = defineTool({ name: 'render_dashboard', description: '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。', parameters: { schema: { type: 'object', required: true, additionalProperties: true, properties: { title: { type: 'string' }, description: { type: 'string' }, charts: { type: 'array', items: chartDef } } } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已生成看板「' + (v.title || '') + '」，含 ' + (v.chartCount || 0) + ' 个图表。本次预览ID: ' + (v.previewId || '') + ' —— 回复末尾的 dsh-ui 围栏必须写成 {"kind":"dashboard","id":"' + (v.previewId || '') + '"}（用上面的预览ID）。候选筛选字段: ' + ((v.filterCandidates || []).join('、') || '（无维度字段）') + ' —— 请向用户确认要用作筛选的字段；用户确认后调用 save_dashboard 时通过 filter_fields 参数传入（数组，未确认则不传）。' }] }, async execute(args, exec) { const schema = args.schema || {}; let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; schemaSet(sessionId, schema); LAST_SCHEMA = { title: schema.title || '', description: schema.description || '', schema: schema };
+  ctx.systemPrompt.section({ name: 'unmanned-store:dashboard-schema', order: 160, text: '【看板 Dashboard 生成】\n1. 调用 render_dashboard 生成看板（传入结构化 schema，顶层含 title/description/charts；销售必须 filters order_status=1；趋势图加时间过滤；字段来自 get_meta）。月度汇总柱状图可在图表定义里加 granularity:"month"，并用 time_column 指定日期列（缺省 order_date，Host 会按日聚合后合并为月）。每个图表 metrics 只允许 1 个指标（{column, agg, alias}），多指标需拆成多个图表；图表必须写 table。\n2. 生成后，工具结果会给出本次预览ID（previewId）。用一句话总结看板要点，并在回复【最后】追加 dsh-ui 围栏，ID 必须使用本次返回的 previewId（每个看板一个独立ID，互不覆盖）：\n```\ndsh-ui\n{"kind":"dashboard","id":"<previewId>"}\n```\n3. 然后询问用户是否保存到「我的看板」，确认后调用 save_dashboard 工具。也可以让用户直接点预览卡片里每个图表旁的「保存」按钮单独保存。' })
+  const renderTool = defineTool({ name: 'render_dashboard', description: '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。', parameters: { schema: { type: 'object', required: true, additionalProperties: true, properties: { title: { type: 'string' }, description: { type: 'string' }, charts: { type: 'array', items: chartDef } } } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已生成看板「' + (v.title || '') + '」，含 ' + (v.chartCount || 0) + ' 个图表。本次预览ID: ' + (v.previewId || '') + ' —— 回复末尾的 dsh-ui 围栏必须写成 {"kind":"dashboard","id":"' + (v.previewId || '') + '"}（用上面的预览ID）。候选筛选字段: ' + ((v.filterCandidates || []).join('、') || '（无维度字段）') + ' —— 请向用户确认要用作筛选的字段；用户确认后调用 save_dashboard 时通过 filter_fields 参数传入（数组，未确认则不传）。' }] }, async execute(args, exec) { const schema = args.schema || {}; assertChartDefs(schema.charts, 'charts['); let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; schemaSet(sessionId, schema); LAST_SCHEMA = { title: schema.title || '', description: schema.description || '', schema: schema };
         const pid = 'pv' + Date.now() + Math.random().toString(36).slice(2, 6)
         // 预览持久化失败不再静默吞掉：store 读/写错误直接抛给调用方（审计 C1 写错误传播）
         const st0 = await readStore(); st0.previews = st0.previews || {}
@@ -324,7 +377,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
         const filterCandidates = []; (schema.charts || []).forEach(function (c) { (c.group_by || []).forEach(function (g) { if (g && filterCandidates.indexOf(g) < 0) filterCandidates.push(g) }) })
         return { title: schema.title || '', chartCount: (schema.charts || []).length, previewId: pid, filterCandidates: filterCandidates } } })
   ctx.tools.register(renderTool)
-  const saveTool = defineTool({ name: 'save_dashboard', description: '把最近生成且用户确认的看板保存到「我的看板」，每个图表作为独立项加入「全部」。', parameters: { title: { type: 'string', description: '看板名称，可选' }, filter_fields: { type: 'array', items: { type: 'string' }, description: '用户确认的筛选字段（列名数组，来自生成时的候选筛选字段）' } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已保存 ' + (v.count || 0) + ' 个图表到我的看板。' }] }, async execute(args, exec) { let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; const schema = schemaGet(sessionId); if (!schema || !schema.charts || !schema.charts.length) throw new Error('没有可保存的看板，请先生成看板'); const s = await readStore(); const now = new Date().toISOString(); var base = args.title || schema.title || '看板'; (schema.charts || []).forEach(function (c, i) { const ff = Array.isArray(args.filter_fields) ? args.filter_fields.filter(function (f) { return (c.group_by || []).indexOf(f) >= 0 }) : null; if (s.layout_custom) { s.charts.unshift({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId), filterable: ff && ff.length ? ff : undefined }) } else { s.charts.push({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId) }) } }); await queueStoreWrite(); return { count: (schema.charts || []).length, saved: true } } })
+  const saveTool = defineTool({ name: 'save_dashboard', description: '把最近生成且用户确认的看板保存到「我的看板」，每个图表作为独立项加入「全部」。', parameters: { title: { type: 'string', description: '看板名称，可选' }, filter_fields: { type: 'array', items: { type: 'string' }, description: '用户确认的筛选字段（列名数组，来自生成时的候选筛选字段）' } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已保存 ' + (v.count || 0) + ' 个图表到我的看板。' }] }, async execute(args, exec) { let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; const schema = schemaGet(sessionId); if (!schema || !schema.charts || !schema.charts.length) throw new Error('没有可保存的看板，请先生成看板'); assertChartDefs(schema.charts, 'charts['); const s = await readStore(); const now = new Date().toISOString(); var base = args.title || schema.title || '看板'; (schema.charts || []).forEach(function (c, i) { const ff = Array.isArray(args.filter_fields) ? args.filter_fields.filter(function (f) { return (c.group_by || []).indexOf(f) >= 0 }) : null; if (s.layout_custom) { s.charts.unshift({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId), filterable: ff && ff.length ? ff : undefined }) } else { s.charts.push({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId) }) } }); await queueStoreWrite(); return { count: (schema.charts || []).length, saved: true } } })
   ctx.tools.register(saveTool)
   biApi['bi.renderLatest'] = async (args) => {
     let src = null
@@ -364,6 +417,8 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     const idx = Number(args && args.index)
     const cd = src && src.schema && Array.isArray(src.schema.charts) ? src.schema.charts[idx] : null
     if (!cd) return { error: 'not found' }
+    const cdErrs = validateChartDef(cd, '预览图表')
+    if (cdErrs.length) return { error: '图表定义校验失败：\n- ' + cdErrs.join('\n- ') }
     const s = await readStore()
     const id = String(Date.now()) + '-p' + idx
     const rec = { id: id, title: cd.title || ('图表 ' + idx), type: cd.type, chart_def: cd, view_ids: [1], created_at: new Date().toISOString(), session_id: String((args && args.sessionId) || '') }
@@ -421,15 +476,28 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   }
   biApi['bi.getFilterValues'] = async (args) => {
     if (!args || !args.table || !args.column) return { error: 'table/column 必填', values: [] }
+    const table = String(args.table), col = String(args.column)
+    const nullProbe = async () => { try { const nul = await getJson(ctx, 'POST', '/api/query', { table: table, columns: [col], filters: [{ column: col, op: 'IS_NULL' }], limit: 1 }); return (nul.rows || []).length > 0 } catch (e) { return false } }
+    // 审计 C14：优先走后端契约端点 GET /api/query/{table}/distinct/{column}?limit=100 -> {"values":[...]}
+    // （去重下沉到 DB，不再拉 20 万行回来在 JS 里去重）
     try {
-      const col = String(args.column)
-      const data = await getJson(ctx, 'POST', '/api/query', { table: String(args.table), columns: [col], limit: 200000 })
+      const data = await getJson(ctx, 'GET', '/api/query/' + encodeURIComponent(table) + '/distinct/' + encodeURIComponent(col) + '?limit=100')
+      if (data && Array.isArray(data.values)) {
+        const vals = data.values.filter(function (v) { return v !== null && v !== undefined && v !== '' })
+        return { values: vals.slice(0, 100), has_empty: await nullProbe() }
+      }
+    } catch (e) {
+      if (e && e.status !== 404) return { error: String((e && e.message) || e), values: [] }
+      // 404 = 旧版数据服务没有 distinct 端点 → 落回下方旧路径
+    }
+    // DEPRECATED 兜底（仅当数据服务尚未提供 distinct 端点时触发）：全量拉列在 JS 去重——
+    // 重查询，数据服务全面铺开 distinct 后应删除此分支。
+    try {
+      const data = await getJson(ctx, 'POST', '/api/query', { table: table, columns: [col], limit: 200000 })
       const seen = new Map()
-      let hasEmpty = false
-      for (const r of (data.rows || [])) { const v = r[col]; if (v === null || v === undefined || v === '') { hasEmpty = true; continue } const k = String(v); if (!seen.has(k)) seen.set(k, v) }
-      if (!hasEmpty) { const nul = await getJson(ctx, 'POST', '/api/query', { table: String(args.table), columns: [col], filters: [{ column: col, op: 'IS_NULL' }], limit: 1 }); if ((nul.rows || []).length) hasEmpty = true }
-      return { values: Array.from(seen.values()).slice(0, 100), has_empty: hasEmpty }
-    } catch (e) { return { error: String(e && e.message || e), values: [] } }
+      for (const r of (data.rows || [])) { const v = r[col]; if (v === null || v === undefined || v === '') continue; const k = String(v); if (!seen.has(k)) seen.set(k, v) }
+      return { values: Array.from(seen.values()).slice(0, 100), has_empty: await nullProbe() }
+    } catch (e) { return { error: String((e && e.message) || e), values: [] } }
   }
   biApi['bi.setViewFilter'] = async (args) => {
     const s = await readStore()
@@ -510,9 +578,13 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
       const c = (s.charts || []).find(function (x) { return x.id === String(args.id) })
       if (!c) throw new Error('图表不存在: ' + args.id)
       const def = args.chart_def || {}
-      if (!def.type || ['bar', 'line', 'pie', 'table', 'text', 'kpi'].indexOf(def.type) < 0) throw new Error('chart_def.type 无效')
-      if (!def.title || !String(def.title).trim()) throw new Error('chart_def.title 不能为空')
+      const verrs = validateChartDef(def, 'chart_def')
+      if (verrs.length) throw new Error('图表定义校验失败：\n- ' + verrs.join('\n- '))
+      // 审计 C15：变更前先压入含图表定义的完整快照，bi.undoLayout 可回滚
+      pushUndo(s)
       c.chart_def = def
+      c.title = def.title
+      c.type = def.type
       await queueStoreWrite()
       return { ok: true, id: c.id, title: def.title, type: def.type }
     }
@@ -671,18 +743,32 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     if (!args || !args.table) return { error: 'table 必填' }
     return await getJson(ctx, 'POST', '/api/settings/tables', { table: String(args.table), accessible: !!args.accessible }, 8000)
   }
+  // 管道固定白名单（与设置页 saveFreq 的 targets 一致）：任意字符串管道名会往共享爬虫配置里
+  // 注入垃圾键，下游 Crawler 不可控——超出白名单一律拒绝。
+  const CRAWL_PIPELINES = ['cloud', 'shelf', 'standard_qty', 'procurement']
   biApi['bi.setCrawlFrequency'] = async (args) => {
     if (!args || !args.pipeline) return { error: 'pipeline 必填' }
+    const pipeline = String(args.pipeline)
+    if (CRAWL_PIPELINES.indexOf(pipeline) < 0) return { error: '未知管道: ' + pipeline + '（允许: ' + CRAWL_PIPELINES.join(', ') + '）' }
     if (!CFG.crawlConfigFile) return { error: '未配置爬虫（crawlConfigFile 为空，仅数据浏览可用）' }
     const minutes = Math.max(1, parseInt(args.minutes, 10) || 15)
+    // 审计 C10：旧实现读失败 → cfg={} 照常写盘，等于把损坏/未知的爬虫配置直接抹掉重置。
+    // 现在读/解析失败一律拒绝写入并返回错误（配置归 Crawler 侧所有，宁可不动）。
+    let raw = ''
+    try { raw = await fsp.readFile(CFG.crawlConfigFile, 'utf8') } catch (e) { return { error: '爬虫配置读取失败，已拒绝写入: ' + String((e && e.message) || e) } }
     let cfg = {}
-    try { const t = await fsv.resolve(CFG.crawlConfigFile); cfg = JSON.parse(await fsv.readText(t)) } catch (e) { cfg = {} }
+    try { cfg = JSON.parse(raw || '{}') } catch (e) { return { error: '爬虫配置 JSON 损坏，已拒绝写入: ' + String((e && e.message) || e) } }
     if (!cfg.pipelines || typeof cfg.pipelines !== 'object') cfg.pipelines = {}
-    if (!cfg.pipelines[args.pipeline] || typeof cfg.pipelines[args.pipeline] !== 'object') cfg.pipelines[args.pipeline] = {}
-    cfg.pipelines[args.pipeline].interval_minutes = minutes
-    const t2 = await fsv.resolve(CFG.crawlConfigFile)
-    await fsv.writeText(t2, JSON.stringify(cfg, null, 2))
-    return { ok: true, pipeline: String(args.pipeline), interval_minutes: minutes }
+    if (!cfg.pipelines[pipeline] || typeof cfg.pipelines[pipeline] !== 'object') cfg.pipelines[pipeline] = {}
+    cfg.pipelines[pipeline].interval_minutes = minutes
+    // 原子写：先留 .bak（覆盖为改动前的原文），再 temp+rename 替换主文件
+    try {
+      await fsp.writeFile(CFG.crawlConfigFile + '.bak', raw)
+      const tmp = CFG.crawlConfigFile + '.tmp-' + process.pid + '-' + Date.now()
+      try { await fsp.writeFile(tmp, JSON.stringify(cfg, null, 2)); await fsp.rename(tmp, CFG.crawlConfigFile) }
+      catch (e) { try { await fsp.unlink(tmp) } catch (e2) {}; throw e }
+    } catch (e) { return { error: '爬虫配置写入失败: ' + String((e && e.message) || e) } }
+    return { ok: true, pipeline: pipeline, interval_minutes: minutes }
   }
   biApi['bi.getConfig'] = async () => { await cfgReady; return { dataApi: CFG.dataApi, statusUrl: CFG.statusUrl } }
   biApi['bi.setConfig'] = async (args) => {
