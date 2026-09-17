@@ -163,7 +163,7 @@ dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards   # 或本地路径
 | 症状 | 原因与处理 |
 |---|---|
 | 设置页地址卡片正常，但数据表区红字「✗ 数据服务不可达——检查数据主机地址或网络后重试」 | 不在数据主机所在网络 / 地址填错 / 数据主机服务没起。用卡片的「测试连接」定位：连不通 → 查 IP、是否同一局域网、数据主机 `docker compose up -d` 是否在跑、防火墙是否放行 8600 |
-| 同步状态条（云平台/飞书）一直灰色「离线」 | 浏览端正常现象（浏览端没有爬虫）。要显示数据主机的爬虫状态：展开「其他」，把「状态服务」填成数据主机地址（8080 端口），且数据主机已放行 8080 |
+| 同步状态条（云平台/飞书）一直灰色「离线」 | 浏览端正常现象（浏览端没有爬虫）。要显示数据主机的爬虫状态：展开「其他」，把「状态服务」填成数据主机地址（8080 端口），且数据主机已放行 8080——注意状态服务器默认只绑 127.0.0.1，跨机访问需在数据主机上以 `BI_STATUS_HOST=0.0.0.0 bash web/start.sh` 启动 |
 | DSH 设置页没有「无人超市」分区 | 插件未装上或未重启：`ls ~/.dsh/profiles/web/node_modules/dsh-bi-dashboards/` 应存在；旧机器确认已跑 `static/scripts/migrate-to-native.sh` 清掉旧双包并重启 DSH |
 | 浏览器还是旧界面 | Ctrl+F5 强制刷新 |
 | 图表区域空白、Network 里 echarts 404 | `~/.dsh/bi-dashboards/vendor/echarts.min.js` 缺失：从包内 `static/vendor/echarts.min.js` 手动拷入，或删除持久化目录让其重新播种 |
@@ -273,7 +273,7 @@ dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards   # 或本地路径
 **仅看板浏览端可完全跳过本节。** 想自己搭建数据主机时，需要以下组件（均只在数据主机运行）：
 
 - **data-service（:8600）**：FastAPI 数据服务，Docker 部署（`docs/docker-windows/docker-compose.yml`），依赖外部 PostgreSQL（biz-postgres，库名 `unmanned_supermarket`）与外部网络 `unmanned-store_default`；环境变量参考 `data-service/.env.example`，表结构见 `sql/README.md`
-- **状态服务器（:8080，可选）**：`bash web/start.sh`（python3，绑定 0.0.0.0）
+- **状态服务器（:8080，可选）**：`bash web/start.sh`（python3，默认只绑定 127.0.0.1；需要局域网内其他机器访问状态台/触发同步时，在数据主机上用 `BI_STATUS_HOST=0.0.0.0 bash web/start.sh` 显式放开——服务无鉴权，仅限可信网络）
 - **爬虫同步**：云平台/飞书 → PG 的数据同步只在数据主机运行
 
 端口自定义：8600 改 `docs/docker-windows/docker-compose.yml` 端口映射，8080 改 `web/start.sh` 里的参数，改完同步更新数据主机自己的 config.json（或在其设置页地址卡片改），展示地址自动跟随。
