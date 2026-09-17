@@ -137,7 +137,7 @@ dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards   # 或本地路径
 
 > 地址格式：**完整 URL 含端口**。只填 IP 点「保存」会自动补 `http://` 和 `:8600`（状态服务自动补 `:8080`）；但「测试连接」要求以 `http://` 开头的完整 URL，所以建议直接填完整。
 >
-> 安全须知：8600 目前无鉴权，仅数据表白名单兜底，请只在信任的网络里开放。
+> **安全须知（本版本应用层零鉴权）**：8600 数据服务与 8080 状态服务器**没有任何应用层鉴权**，能连通即可读取白名单表的**全量**数据——表白名单只是限定「只能 SELECT 这些表」，不是访问控制。因此：同一局域网直连 = 同网段任何人都能看全部业务数据，是否接受由数据主人决策；跨网络访问**必须走 Tailscale/VPN**（见第 4 节表与第 9.2 节），严禁用 frp/ngrok/公网映射暴露 8600。加固步骤（8080 锁本机、8600 仅经 VPN、可选 nginx 反代）见 **9.2 网络安全姿态**。
 
 **验证点**：
 
@@ -272,10 +272,69 @@ dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards   # 或本地路径
 
 **仅看板浏览端可完全跳过本节。** 想自己搭建数据主机时，需要以下组件（均只在数据主机运行）：
 
-- **data-service（:8600）**：FastAPI 数据服务，Docker 部署（`docs/docker-windows/docker-compose.yml`），依赖外部 PostgreSQL（biz-postgres，库名 `unmanned_supermarket`）与外部网络 `unmanned-store_default`；环境变量参考 `data-service/.env.example`，表结构见 `sql/README.md`
-- **状态服务器（:8080，可选）**：`bash web/start.sh`（python3，绑定 0.0.0.0）
+- **data-service（:8600）**：FastAPI 数据服务，Docker 部署（`docs/docker-windows/docker-compose.yml`，放到仓库根与 `data-service/` 同级使用），依赖外部 PostgreSQL（biz-postgres，库名 `unmanned_supermarket`）与外部网络 `unmanned-store_default`（前置条件见 compose 文件内注释）。账户密码等**必填变量从 compose 旁 `.env` 注入**（模板 `docs/docker-windows/.env.example`，占位符，`.env` 不入库）；容器外手动跑的完整变量清单参考 `data-service/.env.example`；表结构见 `sql/README.md`
+- **状态服务器（:8080，可选）**：`bash web/start.sh`（python3，当前固定绑定 0.0.0.0，锁本机见 9.2 节）
 - **爬虫同步**：云平台/飞书 → PG 的数据同步只在数据主机运行
 
+### 9.1 部署矩阵（组件 × 环境默认值）
+
+| 变量/地址 | 数据主机（宿主机） | data-service 容器内 | 目标机（远程浏览器，DSH 插件） |
+|---|---|---|---|
+| **DB host**（`DB_HOST`） | `biz-postgres:5432`（PG 是 unmanned-store 项目里的容器；宿主机手动跑 uvicorn 调试时改 `localhost`） | `biz-postgres`（由 `.env` 注入，走 `unmanned-store_default` 外部网络） | 不适用——只经 8600 取数，不直连 PG |
+| **数据服务 URL**（`dataApi`） | `http://localhost:8600` | 监听 `0.0.0.0:8600`，compose 映射到宿主机 `:8600` | 默认 `http://localhost:8600`（即本机自建数据主机的零配置情形）；远程浏览填数据主机地址，如 `http://192.168.1.100:8600` 或 Tailscale 的 `http://100.x.x.x:8600` |
+| **状态 URL**（`statusUrl`） | `http://localhost:8080` | 不适用——状态服务器不进容器 | 默认 `http://localhost:8080`（浏览端显示「离线」属预期）；要看数据主机爬虫状态才改填 `http://<数据主机>:8080` |
+| **表/视图命名空间** | `sql/` DDL；插件新建对象在 `bi_plugin` schema（`public.forecast_*` 为登记的例外） | 同左（连接库 `unmanned_supermarket`） | 只读展示，中文视图引用需带 `bi_plugin.` 前缀 |
+
 端口自定义：8600 改 `docs/docker-windows/docker-compose.yml` 端口映射，8080 改 `web/start.sh` 里的参数，改完同步更新数据主机自己的 config.json（或在其设置页地址卡片改），展示地址自动跟随。
+
+### 9.2 网络安全姿态（本版本应用层零鉴权，安全完全由网络层承担）
+
+前提认知：**8600/8080 没有任何应用层鉴权**。所谓「表白名单」只是限定 data-service 能对哪些表执行 SELECT，**不是访问控制**——网络可达者即可读白名单表的全量数据。据此有三条具体做法：
+
+**（1）8080 状态服务器：锁到本机**
+
+`web/server.py` 当前写死绑定 `0.0.0.0`（`web/start.sh` 只传端口），锁到本机靠防火墙收口：
+
+```bash
+# Ubuntu（非 WSL）：默认拒入站；loopback 不走 INPUT，本机访问不受影响
+sudo ufw default deny incoming
+sudo ufw allow in on tailscale0 to any port 8600 proto tcp   # 8600 仅经 VPN 进，见（2）
+sudo ufw enable
+```
+
+```powershell
+# WSL2：默认 NAT 模式下局域网本来就进不来 8080；
+# 若开了 mirrored 网络模式或做过 portproxy，在 Windows（管理员 PowerShell）加阻断规则：
+netsh advfirewall firewall add rule name="dsh-bi-8080-block" dir=in action=block protocol=tcp localport=8080
+```
+
+**（2）8600 数据服务：跨网络访问必须走 Tailscale/VPN**
+
+- 标准做法：两台机安装 Tailscale 并登录同一账号，目标机 `dataApi` 填数据主机的 `100.x` 地址；同时按上面 ufw 把 8600 入站限制在 `tailscale0` 接口（WSL2 则用 netsh 只放行 Tailscale 虚拟网卡对应网段）。
+- **禁止**：frp、ngrok、路由器端口映射、公网 IP 直开——8600 无鉴权，等于把数据库白名单表全量公开。
+- 同一局域网直连属数据主人的便利取舍：接受即意味着同网段任何设备可读白名单表全量数据，本指南不做技术兜底。
+
+**（3）可选 nginx 反向代理（仅 TLS 终结/统一入口；鉴权按用户决策暂缓）**
+
+> 明确说明：本节示例**只提供 TLS 终结与统一入口，不构成访问控制**。接入层鉴权（Basic Auth / auth_request 等）按用户决策暂缓实现——不要把「挂了 nginx」当成安全边界，能到 nginx 的请求仍会被转发给无鉴权的 8600。
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name bi.example.com;
+    ssl_certificate     /etc/letsencrypt/live/bi.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/bi.example.com/privkey.pem;
+
+    location / {
+        # 配合把 compose 端口映射改为 "127.0.0.1:8600:8600"，
+        # 让 8600 只从 loopback 服务，外部流量必须经 nginx 进来
+        proxy_pass http://127.0.0.1:8600;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+启用反代后：`docs/docker-windows/docker-compose.yml` 的映射改成 `"127.0.0.1:8600:8600"`，目标机 `dataApi` 填该 https 域名。
 
 详见仓库内 `README.md`（目录结构表）与各 Docker 指南。
