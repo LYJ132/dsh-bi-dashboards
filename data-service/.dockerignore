@@ -1,0 +1,10 @@
+# 本地虚拟环境 / Python 缓存
+.venv/
+__pycache__/
+*.pyc
+
+# 本机环境变量与日志（机密不进镜像）
+.env
+.env.*
+*.env
+*.log
