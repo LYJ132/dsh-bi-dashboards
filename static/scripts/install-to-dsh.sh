@@ -10,6 +10,7 @@
 #   bash static/scripts/install-to-dsh.sh                          # 数据主机与本机同一局域网时，之后再改 config.json
 #   bash static/scripts/install-to-dsh.sh --data-api http://192.168.x.x:8600
 #   bash static/scripts/install-to-dsh.sh --data-api http://100.x.x.x:8600 --status-url http://100.x.x.x:8080
+#   bash static/scripts/install-to-dsh.sh --force-config          # config.json 已存在时覆盖之（旧配置备份为 .bak）
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"        # bi-plugin 根目录
@@ -17,12 +18,16 @@ PROFILE="${DSH_PROFILE:-$HOME/.dsh/profiles/web}"
 NM="$PROFILE/node_modules"
 DATA_API="http://localhost:8600"
 STATUS_URL="http://localhost:8080"
+DATA_API_SET=0
+STATUS_URL_SET=0
+FORCE_CONFIG=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --data-api) DATA_API="$2"; shift 2 ;;
-    --status-url) STATUS_URL="$2"; shift 2 ;;
-    *) echo "未知参数: $1（支持 --data-api / --status-url）"; exit 1 ;;
+    --data-api) DATA_API="$2"; DATA_API_SET=1; shift 2 ;;
+    --status-url) STATUS_URL="$2"; STATUS_URL_SET=1; shift 2 ;;
+    --force-config) FORCE_CONFIG=1; shift ;;
+    *) echo "未知参数: $1（支持 --data-api / --status-url / --force-config）"; exit 1 ;;
   esac
 done
 
@@ -36,10 +41,12 @@ cp -r "$SRC/static/bi-dashboards-client/lib"     "$NM/bi-dashboards-client/"
 cp    "$SRC/static/bi-dashboards-client/package.json" "$NM/bi-dashboards-client/package.json"
 cp    "$SRC/static/vendor/echarts.min.js"        "$NM/bi-dashboards-host/static/vendor/echarts.min.js"
 
-# config.json：不存在才生成。vendorFile/storeFile 用相对路径（相对插件包根，跨机通用）；
-# dataApi/statusUrl 默认 localhost（数据主机本机零配置即用），异机可用参数覆盖或装完后在 DSH 设置页「服务地址」里改
+# config.json：不存在才生成；已存在默认保留（避免静默丢掉用户在设置页改过的地址），
+# --force-config 才覆盖（旧配置备份为 .bak）。vendorFile/storeFile 用相对路径
+# （相对插件包根，跨机通用）；dataApi/statusUrl 默认 localhost（数据主机本机零配置即用），
+# 异机可用参数覆盖或装完后在 DSH 设置页「服务地址」里改
 CFG="$NM/bi-dashboards-host/config.json"
-if [ ! -f "$CFG" ]; then
+write_cfg() {
   cat > "$CFG" <<EOF
 {
   "dataApi": "$DATA_API",
@@ -49,9 +56,20 @@ if [ ! -f "$CFG" ]; then
   "crawlConfigFile": ""
 }
 EOF
+}
+if [ ! -f "$CFG" ]; then
+  write_cfg
   echo "[配置] 已生成 $CFG"
+elif [ "$FORCE_CONFIG" = 1 ]; then
+  cp -f "$CFG" "$CFG.bak"
+  write_cfg
+  echo "[配置] --force-config：已备份旧配置为 $CFG.bak 并按本次参数重新生成 $CFG"
 else
-  echo "[配置] 保留已有 $CFG（数据主机地址也可在 DSH 设置页「服务地址」中修改）"
+  echo "[配置] existing config kept：保留已有 $CFG（未做修改）"
+  if [ "$DATA_API_SET" = 1 ] || [ "$STATUS_URL_SET" = 1 ]; then
+    echo "[配置] 注意：本次传入的 --data-api/--status-url 被忽略；要覆盖已有配置请加 --force-config"
+  fi
+  echo "[配置] 数据主机地址也可在 DSH 设置页「服务地址」中修改"
 fi
 
 # 旧版迁移：早期版本代码读取 lib/config.json，现已统一为包根——合并旧机器上的服务地址后归档
