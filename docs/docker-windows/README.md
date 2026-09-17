@@ -16,4 +16,5 @@
 | `config-docker-dns.ps1` | 配置 Docker DNS |
 | `daemon.json` | Docker daemon 镜像加速参考配置 |
 | `DockerMirrorConfig.md` / `Docker镜像配置指南.md` / `Docker镜像配置快速参考.md` | 镜像配置说明文档 |
-| `docker-compose.yml` | data-service 容器编排参考 |
+| `docker-compose.yml` | data-service 容器编排参考（数据主机上放到仓库根使用；必填变量来自 `.env`，外部 PostgreSQL/网络前置条件见文件内注释） |
+| `.env.example` | compose 环境变量模板（仅占位符；真实的 `.env` 不入库） |
