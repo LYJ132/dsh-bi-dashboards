@@ -23,6 +23,7 @@
 """
 
 from datetime import date, datetime
+import time
 from typing import Any
 
 import asyncpg
@@ -79,21 +80,25 @@ MAX_FILTERS = 50
 MAX_ORDER_BY = 10
 MAX_COLUMNS = 100
 
-# 列类型缓存：{table: {column: data_type}}
-_COLUMNS_CACHE: dict[str, dict[str, str]] = {}
+# 列类型缓存：{table: (cols, loaded_at)}。带 TTL（审计 B9）：
+# 1) 避免表结构变更后缓存永久陈旧；2) 防止缓存随表数量无限增长。
+_COLUMNS_TTL_SECONDS = 300
+_COLUMNS_CACHE: dict[str, tuple[dict[str, str], float]] = {}
 
 
 async def _get_columns(conn, table: str) -> dict[str, str]:
-    """返回 {column: data_type}，来自 information_schema，带缓存。"""
-    if table in _COLUMNS_CACHE:
-        return _COLUMNS_CACHE[table]
+    """返回 {column: data_type}，来自 information_schema，带 5 分钟 TTL 缓存。"""
+    now = time.monotonic()
+    entry = _COLUMNS_CACHE.get(table)
+    if entry is not None and (now - entry[1]) < _COLUMNS_TTL_SECONDS:
+        return entry[0]
     rows = await conn.fetch("""
         SELECT column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = $1
     """, table)
     cols = {r["column_name"]: r["data_type"] for r in rows}
-    _COLUMNS_CACHE[table] = cols
+    _COLUMNS_CACHE[table] = (cols, now)
     return cols
 
 
