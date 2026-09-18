@@ -54,11 +54,14 @@ async function forwardStatusPost(path) {
 }
 async function getJson(ctx, method, path, body, timeoutMs) { const text = await callApi(ctx, method, path, body, timeoutMs); try { return JSON.parse(text) } catch (e) { throw new Error('数据服务返回非 JSON: ' + String(text).slice(0, 200)) } }
 // ===== 插件自更新（双形态统一入口）：git 仓库安装走 git fetch / pull --ff-only + node scripts/build.mjs；
-// github: 快照安装（非 git）走 DSH 原生刷新 dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards =====
+// Gitee 快照安装（非 git）走 DSH 原生刷新 dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git =====
 // 红线：git 形态只做 ff-only 拉取与构建；快照形态只调官方 add 命令；绝不跑 reset/checkout/clean 等破坏性命令，绝不触碰 ~/.dsh/bi-dashboards/（用户数据在包外）。
-const REPO_URL = 'github:LYJ132/dsh-bi-dashboards'
+// dsh plugin add 是 pnpm add 包装：github: 速记只对 GitHub 宿主生效，Gitee 通道必须给完整 https git URL。
+const REPO_URL = 'https://gitee.com/LYJ132/dsh-bi-dashboards.git'
+// 快照形态远端最新版探针：Gitee raw 直读 master 分支 package.json（npm view 对 git URL 不可用）
+const PKG_JSON_RAW_URL = REPO_URL.replace(/\.git$/, '') + '/raw/master/package.json'
 const UPD_HINT = 'dsh plugin --profile web add ' + REPO_URL + ' 更新'
-const UPD_NATIVE_HINT = '点更新将从 GitHub 拉取最新版'
+const UPD_NATIVE_HINT = '点更新将从 Gitee 拉取最新版'
 let PKG_VERSION = '1.1.0'
 try { PKG_VERSION = String(JSON.parse(readFileSync(PKG_DIR + '/package.json', 'utf8')).version || PKG_VERSION) } catch (e) {}
 async function runCmd(ctx, argv, cwd, timeoutMs) {
@@ -80,14 +83,14 @@ function livePkgVersion(repo) {
 async function updateCheckState(ctx) {
   const repo = updateRepoDir()
   if (!repo) {
-    // 快照安装（github: 形态，包目录无 .git）：本地版本实时读包内 package.json；
-    // 远端最新版 best-effort 走 `npm view github:… version`（外层 timeout 40s 硬上限——弱网/劫持环境
-    // 下 npm 会无限挂起，runCmd 的 timeoutMs 不强制；失败只置 null，绝不臆造落后数）
+    // 快照安装（Gitee 形态，包目录无 .git）：本地版本实时读包内 package.json；
+    // 远端最新版 best-effort fetch Gitee raw master 分支 package.json（AbortSignal 40s 硬上限——弱网/劫持环境
+    // 下请求可能无限挂起；失败只置 null，绝不臆造落后数）
     const version = livePkgVersion(PKG_DIR)
     let latestVersion = null
     try {
-      const nv = await runCmd(ctx, ['timeout', '-k', '5', '40', 'npm', 'view', REPO_URL, 'version'], '/tmp', 45000)
-      if (nv.code === 0) { const m = String(nv.out).match(/\d+\.\d+\.\d+[0-9A-Za-z.\-]*/); if (m) latestVersion = m[0] }
+      const r = await fetch(PKG_JSON_RAW_URL, { signal: AbortSignal.timeout(40000) })
+      if (r.ok) { const j = await r.json(); const m = String((j && j.version) || '').match(/\d+\.\d+\.\d+[0-9A-Za-z.\-]*/); if (m) latestVersion = m[0] }
     } catch (e) {}
     return { repo: false, version, latestVersion, canUpdate: true, method: 'native-add', hint: UPD_NATIVE_HINT }
   }

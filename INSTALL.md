@@ -14,7 +14,7 @@
 
 ```bash
 bash static/scripts/doctor.sh                                    # 1. 体检：全部 [通过] 再继续（有 [失败] 按提示修）
-dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards     # 2. 装插件
+dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git     # 2. 装插件
 # 3. 重启 DSH（运行 dsh 的终端 Ctrl+C，再 dsh --profile web），浏览器 Ctrl+F5
 ```
 
@@ -72,7 +72,7 @@ dsh --profile web        # 首次启动：自动创建 ~/.dsh/profiles/web/，We
 ## 3. 安装插件（官方 dsh plugin 通道）
 
 ```bash
-dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards
+dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git
 ```
 
 也可从本地路径安装（克隆/解压本仓库后）：
@@ -99,7 +99,7 @@ dsh plugin --profile web add /path/to/bi-plugin
 ```bash
 cd /path/to/bi-plugin
 bash static/scripts/migrate-to-native.sh
-dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards   # 或本地路径
+dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git   # 或本地路径
 ```
 
 脚本做什么（幂等）：
@@ -154,7 +154,7 @@ dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards   # 或本地路径
 
 ## 6. 升级与卸载
 
-- **升级**：重新执行 `dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards`（或新版本地路径）。用户数据在 `~/.dsh/bi-dashboards/`，**升级不会丢失配置与看板**。
+- **升级**：重新执行 `dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git`（或新版本地路径）。用户数据在 `~/.dsh/bi-dashboards/`，**升级不会丢失配置与看板**。
 - **查看已装**：`dsh plugin --profile web list`
 - **卸载插件**：`dsh plugin --profile web remove dsh-bi-dashboards`；如需彻底清空用户数据再删除 `~/.dsh/bi-dashboards/`（会连带删掉看板与配置，慎做）。
 
@@ -178,7 +178,7 @@ dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards   # 或本地路径
 
 > 下面 8 条全部来自真实安装事故。装之前先跑 `bash static/scripts/doctor.sh`，其中 1/2/3/6 会提前替你查到这里的大多数坑。
 
-### 8.1 github.com 解析到 127.0.0.1
+### 8.1 github.com 解析到 127.0.0.1（历史问题：安装通道为 github: 速记时代的 DNS 劫持事故，现通道已迁 Gitee；排查思路仍通用）
 
 - **症状**：`dsh plugin add github:...` 报连接失败 / `getent hosts github.com` 输出 `127.0.0.1`；换 DNS、重装系统包都无效。
 - **原因**：DNS 层劫持或 `/etc/hosts` 里残留了把 github.com 指到本机的映射（与证书无关，别去重装 ca-certificates 走弯路）。
@@ -248,7 +248,7 @@ dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards   # 或本地路径
 - **原因**：包已在 node_modules 里被删但元数据还在（或反之），remove 流程找不到它要删的东西。
 - **修复**：**可跳过**。目标已不存在就是目的已达；继续装新版即可：
   ```bash
-  dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards
+  dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git
   ```
 
 ### 8.8 图表全部消失（store 看板数据文件丢失）

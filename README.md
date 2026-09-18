@@ -1,6 +1,6 @@
 # 无人超市 AI BI 插件（dsh-bi-dashboards）
 
-> GitHub 仓库名：`dsh-bi-dashboards`（安装通道 `dsh plugin add github:LYJ132/dsh-bi-dashboards`）。
+> Gitee 仓库：`https://gitee.com/LYJ132/dsh-bi-dashboards`（安装通道 `dsh plugin add https://gitee.com/LYJ132/dsh-bi-dashboards.git`）。
 
 DSH profile 级全局静态插件：提供「我的看板」视图标签、看板生成/保存/修改工具、图表统一画布布局、设置页（数据表管理）。宿主部署于 `~/.dsh/profiles/web/node_modules/`，由 `cordis.patch.yml` 挂载。
 

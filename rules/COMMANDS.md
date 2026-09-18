@@ -60,7 +60,7 @@
 
 ## 现有命令语义
 
-- `/bi-update`：等价于设置页「一键更新」按钮——git 安装 `git pull --ff-only` + 构建；快照安装 `dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards`。
+- `/bi-update`：等价于设置页「一键更新」按钮——git 安装 `git pull --ff-only` + 构建；快照安装 `dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git`。
   成功文案 `更新完成 v旧→v新，重启 DSH 生效` / `已是最新版本 v1.1.3`；失败返回 error 文本（含 stderr 尾部）。
 - `/bi-create <描述>`：空/纯空白 → success + 用法提示 `用法: /bi-create <描述>，例如 /bi-create 近30天各品类销售额趋势`；
   非空 → `agent.followup` 把描述+生成流程指令提交给接收会话的 agent（模型随后走 get_meta→render_dashboard→dsh-ui 预览→save 询问流程）。

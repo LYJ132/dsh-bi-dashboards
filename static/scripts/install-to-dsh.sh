@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 【已废弃 · DEPRECATED】本脚本为 v1.0.0 时代的旧安装方式（拷贝双包进 profile + 手写挂载块）。
 # 新版（v1.1.0 起）插件为官方单包形态 dsh-bi-dashboards，请使用：
-#   dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards
+#   dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git
 # 旧机器迁移：bash static/scripts/migrate-to-native.sh
 # 保留本脚本仅供历史参考。
 #
