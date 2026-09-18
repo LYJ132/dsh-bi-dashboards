@@ -54,17 +54,17 @@ async function forwardStatusPost(path) {
 }
 async function getJson(ctx, method, path, body, timeoutMs) { const text = await callApi(ctx, method, path, body, timeoutMs); try { return JSON.parse(text) } catch (e) { throw new Error('数据服务返回非 JSON: ' + String(text).slice(0, 200)) } }
 // ===== 插件自更新（双形态统一入口）：git 仓库安装走 git fetch / pull --ff-only + node scripts/build.mjs；
-// 快照安装（非 git）走 DSH 原生刷新：GitHub 主通道 dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards，
-// 失败自动改用 Gitee 备通道 add https://gitee.com/LYJ132/dsh-bi-dashboards.git =====
+// 快照安装（非 git）走 DSH 原生刷新：Gitee 主通道 dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git，
+// 失败自动改用 GitHub 备通道 add github:LYJ132/dsh-bi-dashboards =====
 // 红线：git 形态只做 ff-only 拉取与构建；快照形态只调官方 add 命令；绝不跑 reset/checkout/clean 等破坏性命令，绝不触碰 ~/.dsh/bi-dashboards/（用户数据在包外）。
-// dsh plugin add 是 pnpm add 包装：github: 速记只对 GitHub 宿主生效，Gitee 备通道必须给完整 https git URL。
-const REPO_URL = 'github:LYJ132/dsh-bi-dashboards'
-// Gitee 备通道：GitHub 主通道拉取失败（网络/劫持/限流）时的自动重试目标
-const FALLBACK_REPO_URL = 'https://gitee.com/LYJ132/dsh-bi-dashboards.git'
-// 快照形态远端最新版探针备通道：Gitee raw 直读 master 分支 package.json（npm view github: 失败时使用）
-const PKG_JSON_RAW_URL = FALLBACK_REPO_URL.replace(/\.git$/, '') + '/raw/master/package.json'
+// dsh plugin add 是 pnpm add 包装：github: 速记只对 GitHub 宿主生效，Gitee 主通道必须给完整 https git URL。
+const REPO_URL = 'https://gitee.com/LYJ132/dsh-bi-dashboards.git'
+// GitHub 备通道：Gitee 主通道拉取失败（网络/劫持/限流）时的自动重试目标
+const FALLBACK_REPO_URL = 'github:LYJ132/dsh-bi-dashboards'
+// 快照形态远端最新版探针主通道：Gitee raw 直读 master 分支 package.json（失败时再回退 npm view GitHub 备通道）
+const PKG_JSON_RAW_URL = REPO_URL.replace(/\.git$/, '') + '/raw/master/package.json'
 const UPD_HINT = 'dsh plugin --profile web add ' + REPO_URL + ' 更新'
-const UPD_NATIVE_HINT = '点更新将从 GitHub 拉取最新版，失败自动改用 Gitee 备选'
+const UPD_NATIVE_HINT = '点更新将从 Gitee 拉取最新版，失败自动改用 GitHub 备选'
 let PKG_VERSION = '1.1.0'
 try { PKG_VERSION = String(JSON.parse(readFileSync(PKG_DIR + '/package.json', 'utf8')).version || PKG_VERSION) } catch (e) {}
 async function runCmd(ctx, argv, cwd, timeoutMs) {
@@ -87,19 +87,19 @@ async function updateCheckState(ctx) {
   const repo = updateRepoDir()
   if (!repo) {
     // 快照安装（非 git 形态，包目录无 .git）：本地版本实时读包内 package.json；
-    // 远端最新版 best-effort：先 `npm view github:… version`（外层 timeout 40s 硬上限——弱网/劫持环境
-    // 下 npm 会无限挂起，runCmd 的 timeoutMs 不强制），失败再回退匿名 fetch Gitee raw master package.json
-    // （同样 40s 硬上限）；两通道都失败只置 null，绝不臆造落后数
+    // 远端最新版 best-effort：先匿名 fetch Gitee raw master package.json（主通道，40s 硬上限），
+    // 失败再回退 `npm view github:… version`（外层 timeout 40s 硬上限——弱网/劫持环境
+    // 下 npm 会无限挂起，runCmd 的 timeoutMs 不强制）；两通道都失败只置 null，绝不臆造落后数
     const version = livePkgVersion(PKG_DIR)
     let latestVersion = null
     try {
-      const nv = await runCmd(ctx, ['timeout', '-k', '5', '40', 'npm', 'view', REPO_URL, 'version'], '/tmp', 45000)
-      if (nv.code === 0) { const m = String(nv.out).match(/\d+\.\d+\.\d+[0-9A-Za-z.\-]*/); if (m) latestVersion = m[0] }
+      const r = await fetch(PKG_JSON_RAW_URL, { signal: AbortSignal.timeout(40000) })
+      if (r.ok) { const j = await r.json(); const m = String((j && j.version) || '').match(/\d+\.\d+\.\d+[0-9A-Za-z.\-]*/); if (m) latestVersion = m[0] }
     } catch (e) {}
     if (latestVersion === null) {
       try {
-        const r = await fetch(PKG_JSON_RAW_URL, { signal: AbortSignal.timeout(40000) })
-        if (r.ok) { const j = await r.json(); const m = String((j && j.version) || '').match(/\d+\.\d+\.\d+[0-9A-Za-z.\-]*/); if (m) latestVersion = m[0] }
+        const nv = await runCmd(ctx, ['timeout', '-k', '5', '40', 'npm', 'view', FALLBACK_REPO_URL, 'version'], '/tmp', 45000)
+        if (nv.code === 0) { const m = String(nv.out).match(/\d+\.\d+\.\d+[0-9A-Za-z.\-]*/); if (m) latestVersion = m[0] }
       } catch (e) {}
     }
     return { repo: false, version, latestVersion, canUpdate: true, method: 'native-add', hint: UPD_NATIVE_HINT }
@@ -124,8 +124,8 @@ async function performUpdate(ctx) {
   try {
     const repo = updateRepoDir()
     if (!repo) {
-      // 快照安装：DSH 原生刷新——先走 GitHub 主通道 dsh plugin --profile web add <REPO_URL>，
-      // 非零退出再自动改用 Gitee 备通道 <FALLBACK_REPO_URL>（重装最新快照；红线不变：只调官方 add，
+      // 快照安装：DSH 原生刷新——先走 Gitee 主通道 dsh plugin --profile web add <REPO_URL>（完整 https git URL），
+      // 非零退出再自动改用 GitHub 备通道 <FALLBACK_REPO_URL>（重装最新快照；红线不变：只调官方 add，
       // 绝不跑破坏性命令；用户数据在包外 PERSIST_DIR，不受重装影响；长超时 300s 容忍弱网 clone+装依赖）
       let nat
       try {
@@ -134,12 +134,12 @@ async function performUpdate(ctx) {
         const em = String((e && e.message) || e)
         return { ok: false, error: (/ENOENT/.test(em) ? '未找到 dsh 命令，无法自动更新，请在终端手动执行：' + UPD_HINT + '（' + em + '）' : em) }
       }
-      let channel = 'GitHub'
+      let channel = 'Gitee'
       if (nat.code !== 0) {
         const detail = String(nat.err || nat.out || ('exit ' + nat.code)).slice(0, 200)
         const notFound = nat.code === 127 || /ENOENT|command not found|no such file/i.test(detail)
         if (notFound) return { ok: false, error: '未找到 dsh 命令，请手动执行：' + UPD_HINT }
-        // GitHub 主通道失败 → 自动改用 Gitee 备通道重试（同样是官方 add 命令）
+        // Gitee 主通道失败 → 自动改用 GitHub 备通道重试（同样是官方 add 命令）
         let fb
         try {
           fb = await runCmd(ctx, ['dsh', 'plugin', '--profile', 'web', 'add', FALLBACK_REPO_URL], '/tmp', 300000)
@@ -148,11 +148,11 @@ async function performUpdate(ctx) {
         }
         if (fb.code !== 0) {
           const fbDetail = String(fb.err || fb.out || ('exit ' + fb.code)).slice(0, 200)
-          return { ok: false, error: 'dsh plugin add 失败（GitHub 主通道与 Gitee 备通道均已尝试）: GitHub: ' + detail + '；Gitee: ' + fbDetail }
+          return { ok: false, error: 'dsh plugin add 失败（Gitee 主通道与 GitHub 备通道均已尝试）: Gitee: ' + detail + '；GitHub: ' + fbDetail }
         }
-        channel = 'Gitee'
+        channel = 'GitHub'
       }
-      return { ok: true, updated: true, method: 'native-add', channel, note: '重启 DSH 生效' + (channel === 'Gitee' ? '（GitHub 拉取失败，已改用 Gitee 备通道）' : '') }
+      return { ok: true, updated: true, method: 'native-add', channel, note: '重启 DSH 生效' + (channel === 'GitHub' ? '（Gitee 拉取失败，已改用 GitHub 备通道）' : '') }
     }
     const pre = await updateCheckState(ctx)
     if (pre.error) return { ok: false, error: pre.error }
