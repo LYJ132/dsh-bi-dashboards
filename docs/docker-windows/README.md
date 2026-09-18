@@ -2,7 +2,7 @@
 
 本目录存放的是**数据主机（data host）首次搭建时的一次性 Windows Docker Desktop 安装/镜像加速套件**，属于历史性的一次性物料。
 
-这些文件**不参与插件安装**：安装 dsh-bi-dashboards 插件走官方通道（`dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git`），见仓库根 [INSTALL.md](../../INSTALL.md)，无需本目录任何文件。
+这些文件**不参与插件安装**：安装 dsh-bi-dashboards 插件走官方通道（GitHub 主通道 `dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards`，Gitee 备选通道 `https://gitee.com/LYJ132/dsh-bi-dashboards.git`），见仓库根 [INSTALL.md](../../INSTALL.md)，无需本目录任何文件。
 
 ## 内容
 

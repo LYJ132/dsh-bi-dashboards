@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Build dsh-bi-dashboards: bundle src/index.js (Node half) into a fully
-// self-contained lib/index.js so a fresh `dsh plugin add https://gitee.com/LYJ132/dsh-bi-dashboards.git`
+// self-contained lib/index.js so a fresh `dsh plugin add github:LYJ132/dsh-bi-dashboards`
+// (Gitee 备选通道：`dsh plugin add https://gitee.com/LYJ132/dsh-bi-dashboards.git`)
 // boots with zero external bare imports (same shape as dsh-notification).
 // lib/client.js is already self-contained (DSH ModuleLoader factory, `react`
 // provided by the host) and is left as-is.

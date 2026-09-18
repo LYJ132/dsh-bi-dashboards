@@ -7,7 +7,7 @@
 #   2. 把 config.json / 看板数据 / vendor echarts 迁到持久化目录 ~/.dsh/bi-dashboards/（含 lib/config.json 旧机器合并逻辑）
 #   3. 从 profile node_modules 移除旧双包
 #   4. 从 profile cordis.patch.yml 移除旧双包挂载块
-# 之后安装新版：dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git（或本地路径）
+# 之后安装新版：dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards（Gitee 备选 https://gitee.com/LYJ132/dsh-bi-dashboards.git，或本地路径）
 set -euo pipefail
 
 PROFILE="${DSH_PROFILE:-$HOME/.dsh/profiles/web}"
@@ -163,6 +163,6 @@ fi
 
 echo ""
 echo "迁移完成。下一步："
-echo "  1. 安装新版：dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git"
+echo "  1. 安装新版：dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards（Gitee 备选 https://gitee.com/LYJ132/dsh-bi-dashboards.git）"
 echo "  2. 重启 DSH 宿主，浏览器 Ctrl+F5 → 设置页「无人超市」/ 侧栏「我的看板」"
 echo "  3. 数据如有异常，可从 $BACKUP 手动恢复"

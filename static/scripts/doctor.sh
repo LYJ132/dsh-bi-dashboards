@@ -224,7 +224,7 @@ else
     ok "config.json 存在"
   else
     bad "缺 $PERSIST/config.json"
-    hint "重装一次插件（dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git）或从 backup 目录恢复"
+    hint "重装一次插件（dsh plugin --profile web add github:LYJ132/dsh-bi-dashboards，Gitee 备选 https://gitee.com/LYJ132/dsh-bi-dashboards.git）或从 backup 目录恢复"
   fi
   if [ -f "$PERSIST/vendor/echarts.min.js" ] && [ -s "$PERSIST/vendor/echarts.min.js" ]; then
     ok "vendor/echarts.min.js 存在"
