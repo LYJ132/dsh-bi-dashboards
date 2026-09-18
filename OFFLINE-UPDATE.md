@@ -56,7 +56,7 @@ dsh plugin --profile web add "$EXTRACTED"
 systemctl restart dsh    # 或 docker restart dsh，或重启 dsh 进程
 ```
 
-然后在浏览器里对看板页面做**强制刷新**（Ctrl+Shift+R），确保 Client 半部的新静态资源生效。
+然后在浏览器里对看板页面做**强制刷新**（Ctrl+F5 或 Ctrl+Shift+R），确保 Client 半部的新静态资源生效。
 
 ## 验证
 
