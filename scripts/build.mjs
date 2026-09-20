@@ -26,3 +26,7 @@ await build({
 })
 
 console.log('built lib/index.js (bundled, zero external imports)')
+
+// R4 P2-5：能力契约分歧 guard —— 手写契约文本与 describeCapabilities() 生成事实分歧时 loudly fail
+const guard = await import('./verify-capability-guard.mjs')
+await guard.runGuard('./lib/index.js')

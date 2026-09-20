@@ -81,6 +81,14 @@
 - **验证**：R3 harness 35/35（kpi/表格格式化值、value_map 显示层映射、注入时钟证明同环比窗口平移、rules/showTotals）；兼容双跑 8 旧定义 payload+结果与 pre-R3 lib cmp 字节相等
 - **教训**：「往 option 里塞了」≠「用户看得到」——展示层能力落地前必须先探针渲染管线（读 client 代码 + SSR/浏览器实测），只在确认能渲染的面上做宣称，其余以数据透出并如实记录
 
+### E10：能力契约手写漂移——facts 单一源 + build 期分歧 guard（2026-09-20）
+
+- **症状**：bi-capability-v2 R1-R3 连续多轮向 systemPrompt dashboard-schema 段追加能力事实（图型上限/agg/join 级数/表达式函数表/相对记号/having/format/value_map/rules），同一事实散落在 systemPrompt、render_dashboard 描述、/bi-create 命令提示三处手写文本里，已出现同一边界两处口径不一致的苗头；R4 又要加 filtersFrom 绑定规则，继续手写必然漂移
+- **根因**：契约事实没有单一事实源——数字/枚举散在手写散文中，能力改了文案没跟上时无任何机制报错；而 systemPrompt 又要求保持 prose 风格，不能整段变成机器清单
+- **修复**：新建 `src/bi-capabilities.js` 作为单一事实源（CHART_TYPES/METRIC_CAPS/AGG_ENUM/JOIN_MAX_LEVELS/REL_UNITS 常量 + describeCapabilities() 渲染全部事实句 + dashboardSchemaSection() 拼接全文），index.js 只留流程散文；`scripts/verify-capability-guard.mjs` 在 npm run build 末尾 loudly 校验：①生成事实覆盖全部能力边记号 ②段全文逐字包含 describeCapabilities() 输出 ③手写文本（render_dashboard 描述/命令提示，经 DASH_CONTRACT_HAND 导出）必须含与生成事实一致的记号——手改数字即 build 失败（实测把 ≤4 改 ≤5 → guard 2 处报错退出）；模型侧 token 成本不变（只生成紧凑事实句，不生成教程）
+- **验证**：npm run build + guard OK（19 能力边记号）；R4 harness 27/27（含 T8 facts 覆盖、T9 旧定义+命中筛选 payload 逐字节不变）；R1-R3 + R4 compat 双跑 cmp 逐字节相等
+- **教训**：「文档即代码」的下一级是「契约事实即常量」——凡同一事实出现在 3 处以上手写文本，就该收敛为单一源渲染 + 机械 guard，靠人肉同步三处散文必然漂移；guard 必须挂在 build/verify 路径（离开验证路径的 guard 等于没有）
+
 ## 开发契约速查（创造模式必读，细节见 git 历史 0098511 版 DEVELOPMENT.md）
 
 1. **声明红线**：client package.json `dsh.client.inject` 必须为 `[]`；bundle `exports.inject` 只许 `['slots']`（timer 走 window、sessions 走 ctx.get、CSS 走 injectCss）

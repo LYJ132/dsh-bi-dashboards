@@ -40,3 +40,11 @@
 - **验证**：R3 harness 35/35（6,698,990→¥669.9万 kpi+表格且原始行不变、value_map 待处理/已处理仅显示层、注入时钟证明 prev_day/prev_period 窗口随时钟平移且 payload 落在前一日/上一等长窗、rules cellStyles+showTotals 合计 23/70、全部 named-field 报错）；R1 18/18、R2 34/34；8 旧式定义（含 R2 kpi 双指标形态）payload+render 与 pre-R3 lib cmp 字节相等（向后兼容）；echarts 5.5.1 SSR 探针证明格式化字符串不能进 series.data（见 E9）；node --check ×2 + npm run build 通过
 - **契约要点**：一切展示变换只落 client 真正渲染的面——kpi 仅渲染 option.value 文本（同环比副标签并入 value，compare/comparePct/compareLabel 结构化透出）；表格 td 不消费样式（cellStyles 仅数据透出并如实记录）；option 经 JSON 序列化，formatter 函数不可用；柱/线 series 保持数值轴原始刻度
 - **提交**：feature/bi-capability-v2 @ eee64e6 + docs（本次）
+### 12.6 bi-capability-v2 r4 —— 治理层：筛选显式绑定 + 能力契约单一源（P2-3 / P2-5）
+
+- **目标**：治理半部：① P2-3 看板级筛选绑定显式化——缺省规则文档化（筛选列在图表取数列中才应用，用不到的筛选自动跳过不报错），图表可加 filtersFrom 显式收窄/放宽/全拒；候选筛选字段不再推荐无图可消费的维表列；② P2-5 能力契约单一源——systemPrompt dashboard-schema 事实句全部由 describeCapabilities() 生成，build 期 guard 对手写文本做分歧报错
+- **产出**：`src/bi-capabilities.js`（CHART_TYPES/METRIC_CAPS/AGG_ENUM/JOIN_MAX_LEVELS/REL_UNITS 常量 + describeCapabilities()/capabilityFacts()/dashboardSchemaSection()）；`src/index.js`（chartDef/validateChartDef 增加 filtersFrom 校验；chartAcceptsFilter/applyDashboardBinding/dashboardFilterCandidates 纯函数；bi.getChart 对视图筛选走图级绑定（user_filter 仍逐图显式，不裁剪）；render_dashboard 候选与 save_dashboard filterable 改走绑定判定；join 级数常量化；RENDER_TOOL_DESC/BI_CREATE_PROMPT 抽出并经 DASH_CONTRACT_HAND 导出供 guard 对账）；`scripts/verify-capability-guard.mjs`（19 能力边记号 + 手写文本记号对账，npm run build 末尾自动运行）；`scripts/verify-bicap-r4.mjs`（8613 端口，feature/compat 双模式）；lib/index.js 重建；CHART.md 筛选绑定规则 + 候选语义更新；PLUGIN.md E10
+- **验证**：R4 harness 27/27（缺省命中/未命中跳过无错、filtersFrom 收窄/放宽/[] 全拒、join 看板维表列筛选不进未 join 图表 payload、候选排除仅维表列、T8 事实覆盖与 radar/表格样式 caveat 保留、named-field 报错）；R1 18/18、R2 34/34、R3 35/35；R1-R4 各自 compat 双跑（pre-R4 lib = master 99a942b）payload+结果 cmp 逐字节相等（向后兼容）；手改 render_dashboard 描述 ≤4→≤5 实测 build 失败、还原后恢复绿；node --check ×3 + npm run build + guard 通过
+- **契约要点**：缺省绑定规则=「筛选列 ∈ neededColumns（group_by/metrics/filters/time_column 及表达式引用列）才应用，否则跳过不报错」；filtersFrom 三形态=子集收窄/未取列放宽/空数组全拒；候选字段=group_by 纯列名 ∧ ∃图可消费；能力事实改数字/枚举只改 bi-capabilities.js 一处，guard 保证其余文本同步
+- **提交**：feature/bi-capability-v2 @ e3eaeaf + harness + docs（本次）
+
