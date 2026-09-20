@@ -5,7 +5,7 @@
 //      或 {expr, as} 对象（as 为结果列名，缺省用表达式原文）。
 // 求值走「手写分词器 + 递归下降解析器 → AST → 逐行求值」，绝不触碰 eval/new Function。
 export const EXPR_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/
-export const EXPR_FUNCS = ['abs', 'round', 'floor', 'ceil', 'sqrt', 'pow', 'exp', 'ln', 'log', 'log10', 'min', 'max', 'coalesce', 'if', 'year', 'month', 'quarter', 'day', 'weekday', 'length', 'concat', 'upper', 'lower']
+export const EXPR_FUNCS = ['abs', 'round', 'floor', 'ceil', 'sqrt', 'pow', 'exp', 'ln', 'log', 'log10', 'min', 'max', 'coalesce', 'if', 'year', 'month', 'quarter', 'day', 'weekday', 'hour', 'minute', 'datediff', 'date_add', 'length', 'concat', 'upper', 'lower']
 const EXPR_FUNC_SET = new Set(EXPR_FUNCS)
 const exprCache = new Map()
 
@@ -93,14 +93,32 @@ function exprEq(a, b) {
 }
 function exprDateParts(v) {
   if (exprEmpty(v)) return null
-  if (v instanceof Date) return { y: v.getFullYear(), mo: v.getMonth() + 1, d: v.getDate() }
+  if (v instanceof Date) return { y: v.getFullYear(), mo: v.getMonth() + 1, d: v.getDate(), h: v.getHours(), mi: v.getMinutes(), s: v.getSeconds() }
   const s = String(v).trim()
-  const m = /^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/.exec(s)
-  if (m) return { y: Number(m[1]), mo: Number(m[2]), d: Number(m[3]) }
+  // 日期部分必配；时间部分可选（HH:mm 或 HH:mm:ss），无时间成分时 h/mi/s 为 null
+  const m = /^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/.exec(s)
+  if (m) return { y: Number(m[1]), mo: Number(m[2]), d: Number(m[3]), h: m[4] !== undefined ? Number(m[4]) : null, mi: m[5] !== undefined ? Number(m[5]) : null, s: m[6] !== undefined ? Number(m[6]) : (m[4] !== undefined ? 0 : null) }
   const ts = Date.parse(s)
   if (Number.isNaN(ts)) return null
   const dt = new Date(ts)
-  return { y: dt.getFullYear(), mo: dt.getMonth() + 1, d: dt.getDate() }
+  return { y: dt.getFullYear(), mo: dt.getMonth() + 1, d: dt.getDate(), h: dt.getHours(), mi: dt.getMinutes(), s: dt.getSeconds() }
+}
+// ===== 日期运算（P0-2 datediff/date_add 的公共底座；P1-2 同环比后续在此之上组合）=====
+const DAY_MS = 86400000
+function pad2(n) { return (n < 10 ? '0' : '') + n }
+function fmtLocDate(dt) { return dt.getFullYear() + '-' + pad2(dt.getMonth() + 1) + '-' + pad2(dt.getDate()) }
+function fmtLocDateTime(dt) { return fmtLocDate(dt) + ' ' + pad2(dt.getHours()) + ':' + pad2(dt.getMinutes()) + ':' + pad2(dt.getSeconds()) }
+// 月份平移（日数钳制到目标月月末，1/31 加 1 月 → 2/28|29），返回 {y, mo}
+function shiftMonths(y, mo, n) { const t = new Date(Date.UTC(y, mo - 1 + n, 1)); return { y: t.getUTCFullYear(), mo: t.getUTCMonth() + 1 } }
+// 日期平移（单位 d/w/m/y，日数钳制），入参/出参均为本地 Date；unit 缺省 day
+function shiftDate(base, n, unit) {
+  const u = String(unit || 'd').toLowerCase()
+  if (u === 'h' || u === 'hour') return new Date(base.getTime() + n * 3600000)
+  if (u === 'min' || u === 'minute') return new Date(base.getTime() + n * 60000)
+  if (u === 'w' || u === 'week') return new Date(base.getTime() + n * 7 * DAY_MS)
+  if (u === 'm' || u === 'month') { const r = shiftMonths(base.getFullYear(), base.getMonth() + 1, n); const dim = new Date(Date.UTC(r.y, r.mo, 0)).getUTCDate(); return new Date(r.y, r.mo - 1, Math.min(base.getDate(), dim), base.getHours(), base.getMinutes(), base.getSeconds()) }
+  if (u === 'y' || u === 'year') { const ny = base.getFullYear() + n; const dim = new Date(Date.UTC(ny, base.getMonth() + 1, 0)).getUTCDate(); return new Date(ny, base.getMonth(), Math.min(base.getDate(), dim), base.getHours(), base.getMinutes(), base.getSeconds()) }
+  return new Date(base.getTime() + n * DAY_MS)
 }
 
 export function evalNode(n, row, keys) {
@@ -162,6 +180,35 @@ export function evalNode(n, row, keys) {
           if (n.name === 'day') return dp.d
           return new Date(Date.UTC(dp.y, dp.mo - 1, dp.d)).getUTCDay() // 0=周日…6=周六
         }
+        case 'hour': { const dp = exprDateParts(vals[0]); return dp && dp.h !== null ? dp.h : null }
+        case 'minute': { const dp = exprDateParts(vals[0]); return dp && dp.mi !== null ? dp.mi : null }
+        case 'datediff': {
+          // datediff(后, 前) = 两个日期相差的整天数（按日期部分，后 - 前；同日为 0）
+          const a = exprDateParts(vals[0]), b = exprDateParts(vals[1])
+          if (!a || !b) return null
+          return Math.round((Date.UTC(a.y, a.mo - 1, a.d) - Date.UTC(b.y, b.mo - 1, b.d)) / DAY_MS)
+        }
+        case 'date_add': {
+          // date_add(日期, n, 单位)：单位 d/day、w/week、m/month、y/year、h/hour、min/minute（缺省 day）。
+          // 日期级平移保留原时间成分（有则附 HH:mm:ss，否则纯 YYYY-MM-DD）；时间级平移一律返回完整 datetime 字符串。
+          const dp = exprDateParts(vals[0]); if (!dp) return null
+          const n = nm(1); if (n === null || !Number.isInteger(n)) return null
+          const u = String(vals[2] === undefined || vals[2] === null ? 'day' : vals[2]).trim().toLowerCase()
+          const subDay = u === 'h' || u === 'hour' || u === 'min' || u === 'minute'
+          if (subDay) {
+            const baseMin = (dp.h === null ? 0 : dp.h) * 60 + (dp.mi === null ? 0 : dp.mi) + (u === 'h' || u === 'hour' ? n * 60 : n)
+            const rt = new Date(Date.UTC(dp.y, dp.mo - 1, dp.d) + baseMin * 60000)
+            return rt.getUTCFullYear() + '-' + pad2(rt.getUTCMonth() + 1) + '-' + pad2(rt.getUTCDate()) + ' ' + pad2(rt.getUTCHours()) + ':' + pad2(rt.getUTCMinutes()) + ':' + pad2(rt.getUTCSeconds())
+          }
+          const dayShift = (u === 'd' || u === 'day') ? n : (u === 'w' || u === 'week') ? n * 7 : null
+          let y2, mo2, d2
+          if (dayShift !== null) { const rt = new Date(Date.UTC(dp.y, dp.mo - 1, dp.d) + dayShift * DAY_MS); y2 = rt.getUTCFullYear(); mo2 = rt.getUTCMonth() + 1; d2 = rt.getUTCDate() }
+          else if (u === 'm' || u === 'month') { const r = shiftMonths(dp.y, dp.mo, n); y2 = r.y; mo2 = r.mo; d2 = Math.min(dp.d, new Date(Date.UTC(r.y, r.mo, 0)).getUTCDate()) }
+          else if (u === 'y' || u === 'year') { y2 = dp.y + n; mo2 = dp.mo; d2 = Math.min(dp.d, new Date(Date.UTC(y2, mo2, 0)).getUTCDate()) }
+          else throw new Error('date_add 未知时间单位 "' + vals[2] + '"（允许: day/week/month/year/hour/minute）')
+          const datePart = y2 + '-' + pad2(mo2) + '-' + pad2(d2)
+          return dp.h !== null ? datePart + ' ' + pad2(dp.h) + ':' + pad2(dp.mi) + ':' + pad2(dp.s) : datePart
+        }
         case 'length': return exprEmpty(vals[0]) ? 0 : String(vals[0]).length
         case 'concat': return vals.map(function (v) { return exprEmpty(v) ? '' : String(v) }).join('')
         case 'upper': return exprEmpty(vals[0]) ? null : String(vals[0]).toUpperCase()
@@ -215,7 +262,9 @@ export function evalKeysIfExpr(chart, rows) {
 }
 
 // ===== join：维表整行并入事实行（主表同名列优先，不覆盖）=====
-export function mergeJoinRows(factRows, dimRows, leftKey, rightKey) {
+// joinType: 'left'（缺省，未命中/空键事实行原样保留，维表列缺失）| 'inner'（未命中/空键事实行剔除）
+// 缺省行为与旧版 mergeJoinRows（单对象 join 时代）逐行一致：行序不变、命中行同样并维表列、主表同名列不覆盖
+export function mergeJoinRows(factRows, dimRows, leftKey, rightKey, joinType) {
   const map = new Map()
   for (const d of dimRows) {
     const k = d[rightKey]
@@ -223,14 +272,66 @@ export function mergeJoinRows(factRows, dimRows, leftKey, rightKey) {
     const kk = String(k)
     if (!map.has(kk)) map.set(kk, d)
   }
+  const inner = joinType === 'inner'
+  const out = []
   for (const f of factRows) {
     const k = f[leftKey]
-    if (k === null || k === undefined) continue
-    const d = map.get(String(k))
-    if (!d) continue
+    const d = (k === null || k === undefined) ? null : (map.get(String(k)) || null)
+    if (!d) { if (!inner) out.push(f); continue }
     for (const key in d) if (!Object.prototype.hasOwnProperty.call(f, key)) f[key] = d[key]
+    out.push(f)
   }
-  return factRows
+  return out
+}
+
+// join 定义归一化：单对象（旧形态）或对象数组（P0-4 链式，按序合并）→ 数组；type 缺省 'left'
+export function normalizeJoins(join) {
+  if (!join) return []
+  const arr = Array.isArray(join) ? join : [join]
+  return arr.map(function (j) {
+    return { table: String(j.table), left_key: String(j.left_key), right_key: String(j.right_key), type: j && j.type === 'inner' ? 'inner' : 'left' }
+  })
+}
+
+// ===== 相对时间筛选标记（P0-3）：筛选值允许的记号 → 取数时解析为绝对时间 =====
+// 语法（不区分大小写）：
+//   now            → 当前时刻 'YYYY-MM-DD HH:mm:ss'
+//   now-30d        → 当前时刻平移（单位 d/w/m/y/h/min，缺省 d）
+//   today          → 今天 00:00（输出 'YYYY-MM-DD'，适配日期列）
+//   today-1        → 今天平移 N 天（today±N[unit]，缺省 d）
+//   -30d / +7w     → 裸偏移，相对当前时刻（等价 now±Nu）
+// 对象等价形：{relative: "<记号>"}；BETWEEN/IN 数组逐元素解析。
+// 非记号值原样返回（旧静态筛选零改动）；now 快照由调用方每图渲染注入一次（同一图内多筛选共用同一 now，确定性渲染）。
+let nowProvider = function () { return new Date() }
+export function setNowProvider(fn) { nowProvider = typeof fn === 'function' ? fn : function () { return new Date() } }
+export function currentNow() { return nowProvider() }
+const REL_TOKEN = /^(?:(now|today)((?:[+-]\d+(?:d|w|m|y|h|min)?)?)|([+-]\d+)(d|w|m|y|h|min)?)$/
+export function resolveRelToken(token, now) {
+  const m = REL_TOKEN.exec(String(token).trim().toLowerCase())
+  if (!m) return undefined
+  const base = m[1] ? m[1] : 'now'
+  let n = 0, unit = 'd'
+  const off = m[1] ? m[2] : ((m[3] || '') + (m[4] || ''))
+  if (off) { const om = /^([+-]\d+)(d|w|m|y|h|min)?$/.exec(off); if (!om) return undefined; n = parseInt(om[1], 10); unit = om[2] || 'd' }
+  const start = base === 'today' ? new Date(now.getFullYear(), now.getMonth(), now.getDate()) : new Date(now.getTime())
+  const out = shiftDate(start, n, unit)
+  const hasTime = base === 'now' || unit === 'h' || unit === 'min'
+  return hasTime ? fmtLocDateTime(out) : fmtLocDate(out)
+}
+// 单个筛选值解析：记号字符串 / {relative} 对象 / 数组（逐元素）；其余原样
+export function resolveFilterValue(v, now) {
+  if (typeof v === 'string') { const r = resolveRelToken(v, now); return r === undefined ? v : r }
+  if (Array.isArray(v)) return v.map(function (x) { return resolveFilterValue(x, now) })
+  if (v && typeof v === 'object' && typeof v.relative === 'string') { const r = resolveRelToken(v.relative, now); return r === undefined ? v : r }
+  return v
+}
+// 一批筛选解析：非记号值返回原对象（旧定义零改动）；数组值内容相同也会重建数组，但 JSON 序列化逐字节一致
+export function resolveFilters(filters, now) {
+  return (filters || []).map(function (f) {
+    if (!f || typeof f !== 'object' || Array.isArray(f)) return f
+    const nv = resolveFilterValue(f.value, now)
+    return nv === f.value ? f : Object.assign({}, f, { value: nv })
+  })
 }
 
 // JS 侧行过滤器：覆盖 filterItem 全部 op（join 后维表列的筛选无法下沉到单表 /api/query，这里补）

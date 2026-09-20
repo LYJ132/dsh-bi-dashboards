@@ -4,7 +4,7 @@ import { existsSync, readFileSync, realpathSync, promises as fsp } from 'node:fs
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 // 表达式求值 / join 合并 / JS 行过滤纯函数层（esbuild 打包时并入 lib/index.js）
-import { EXPR_IDENT, parseExpr, exprCols, colAccessor, metricAccessor, evalKeysIfExpr, mergeJoinRows, applyJsFilters } from './bi-expr.js'
+import { EXPR_IDENT, parseExpr, exprCols, colAccessor, metricAccessor, evalKeysIfExpr, mergeJoinRows, normalizeJoins, applyJsFilters, resolveFilters, currentNow, setNowProvider, resolveRelToken } from './bi-expr.js'
 // PKG_DIR 必须走 fileURLToPath：URL.pathname 不做 percent 解码（含空格/中文的路径会 404），
 // Windows 下还会产生盘符前斜杠（/D:/...），readFileSync 直接失败。
 const PKG_DIR = fileURLToPath(new URL('../', import.meta.url)).replace(/[\\/]+$/, '')
@@ -201,7 +201,7 @@ function createBiCreateCommand() {
       try {
         agent.followup({
           role: 'user',
-          content: [{ type: 'text', text: '用户通过 /bi-create 请求生成看板：' + desc + '\n请按看板生成流程处理：先用 get_meta 核对字段（销售口径需 filters order_status=1，趋势图加时间过滤），再调用 render_dashboard 生成预览，回复末尾用 dsh-ui 围栏 {"kind":"dashboard","id":"<本次 previewId>"} 展示，并询问用户是否保存到「我的看板」。进阶选型（按需优先于回退 PG 视图）：二维密度/交叉分布用 type:"heatmap"（恰好 2 个 group_by 维度=XY 轴 + 1 指标）；需要他表维度（如大类）给图表加 join: {table:"维表", left_key:"主表列", right_key:"维表关联列"}（每图仅允许一个关联）；占比/客单价等派生指标把 metrics.column 写成表达式（如 "pay_amount / product_qty"，group_by 项同样支持），字段与图型能力细节以系统提示中的看板 schema 为准。' }],
+          content: [{ type: 'text', text: '用户通过 /bi-create 请求生成看板：' + desc + '\n请按看板生成流程处理：先用 get_meta 核对字段（销售口径需 filters order_status=1，趋势图加时间过滤），再调用 render_dashboard 生成预览，回复末尾用 dsh-ui 围栏 {"kind":"dashboard","id":"<本次 previewId>"} 展示，并询问用户是否保存到「我的看板」。进阶选型（按需优先于回退 PG 视图）：二维密度/交叉分布用 type:"heatmap"（恰好 2 个 group_by 维度=XY 轴 + 1 指标）；需要他表维度（如大类）给图表加 join（单对象 {table:"维表", left_key:"主表列", right_key:"维表关联列"}，或多级链式对象数组，后级可引用前级产出列；可选 type:"left"|"inner"，缺省 left）；占比/客单价等派生指标把 metrics.column 写成表达式（如 "pay_amount / product_qty"，group_by 项同样支持，可用 hour/minute/datediff/date_add 等日期函数），字段与图型能力细节以系统提示中的看板 schema 为准；相对时间筛选把 filters[].value 写成记号（"today"=今天、"-30d"=近30天、BETWEEN ["today-29","today"] 等），看板每次打开自动重算时间窗。' }],
           source: { kind: 'user' }
         })
       } catch (e) {
@@ -303,40 +303,59 @@ async function tableColumnNames(ctx, table) {
   return set
 }
 async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'text') return { type: 'text', title: chart.title || '', text: chart.text || '' };
-  // ===== 跨表关联（feat-20260920-chart-schema）：Host 端分别取数、按行合并，data-service 单表 /api/query 不动 =====
-  // meta 可用时裁列：事实查询只取事实列（含 join 键），维表查询取被引用的维表列+关联键；
-  // 维表列上的筛选合并后走 JS 执行（服务端筛选无法正确剔除“未命中维表”的事实行）。
+  // ===== 相对时间筛选（P0-3）：解析一次 now 快照（每图渲染一个 now，确定性）， =====
+  // ===== 记号值('now'/'today-1'/'-30d'/{relative}) 在取数前统一替换为绝对时间， =====
+  // ===== 之后同时作用于 /api/query payload 与合并后 JS 过滤两条路径；静态值原对象透传（零改动）。 =====
+  const nowSnap = currentNow()
+  const allFilters = resolveFilters((chart.filters || []).concat(extraFilters || []), nowSnap)
+  // ===== 跨表关联（feat-20260920-chart-schema；bi-capability-v2 扩展：join 数组链式 + join.type）=====
+  // meta 可用时裁列：事实查询只取事实列（含各级主表侧关联键），每级维表查询取该级被引用的维表列+关联键；
+  // 维表列上的筛选合并后走 JS 执行（服务端筛选无法正确剔除"未命中维表"的事实行）。
+  // join 数组按序合并：后级 left_key 可引用前级产出的维表列（链式取数 order_detail_raw→product_main→category_dim）。
+  // join.type: 'left'（缺省=旧合并语义：未命中事实行保留、维表列为空）| 'inner'（未命中事实行剔除）。
   // meta 不可用则降级：维持旧列裁剪 + 维表整表取回合并。
-  const payload = { table: chart.table, filters: (chart.filters || []).concat(extraFilters || []), limit: 200000 }
+  const payload = { table: chart.table, filters: allFilters, limit: 200000 }
   const cols = neededColumns(chart)
-  let joinDimCols = null, joinDimFilters = []
-  if (chart.join) {
-    const lk = chart.join.left_key, rk = chart.join.right_key
+  const joins = normalizeJoins(chart.join)
+  let dimFilterGroups = [], dimColPlans = null
+  if (joins.length) {
     const mainSet = await tableColumnNames(ctx, chart.table)
-    const dimSet = await tableColumnNames(ctx, chart.join.table)
-    if (mainSet && dimSet) {
-      const need = cols.slice()
-      if (need.indexOf(lk) < 0) need.push(lk)
-      const factCols = [], refDim = []
-      need.forEach(function (c) {
-        if (mainSet.has(c)) factCols.push(c)
-        else if (dimSet.has(c)) { if (refDim.indexOf(c) < 0) refDim.push(c) }
-        else throw new Error('图表定义引用未知列 "' + c + '"（主表 ' + chart.table + ' 与关联表 ' + chart.join.table + ' 均无此列）')
+    const dimSets = []
+    for (const j of joins) dimSets.push(await tableColumnNames(ctx, j.table))
+    if (mainSet && dimSets.every(function (s) { return s })) {
+      dimColPlans = joins.map(function (j, i) { return { rk: j.right_key, refDim: [], dimFilters: [] } })
+      // 引用列分配：主表列→事实查询；维表列→首个含它的维表层（后级可引用前级产出，故按首次出现归属）
+      const pushU = function (arr, c) { if (arr.indexOf(c) < 0) arr.push(c) }
+      const factCols = []
+      cols.forEach(function (c) { if (mainSet.has(c)) pushU(factCols, c); else { const i = dimSets.findIndex(function (s) { return s.has(c) }); if (i < 0) throw new Error('图表定义引用未知列 "' + c + '"（主表 ' + chart.table + ' 与关联表 ' + joins.map(function (j) { return j.table }).join('/') + ' 均无此列）'); pushU(dimColPlans[i].refDim, c) } })
+      joins.forEach(function (j) { if (mainSet.has(j.left_key)) pushU(factCols, j.left_key) })
+      // 筛选分配：主表列留在 payload（服务端过滤）；维表列归入含它的层并从 payload 剔除（合并后 JS 过滤）
+      const dimAssigned = []
+      allFilters.forEach(function (f) {
+        if (!f || !f.column) return
+        if (mainSet.has(f.column)) return
+        const i = dimSets.findIndex(function (s) { return s.has(f.column) })
+        const lv = i < 0 ? 0 : i
+        pushU(dimColPlans[lv].refDim, f.column); pushU(dimColPlans[lv].dimFilters, f); dimAssigned.push(f)
       })
-      const splitMain = [], splitDim = []
-      payload.filters.forEach(function (f) { if (f && f.column && !mainSet.has(f.column)) { if (refDim.indexOf(f.column) < 0) refDim.push(f.column); splitDim.push(f) } else splitMain.push(f) })
-      payload.columns = factCols; payload.filters = splitMain
-      joinDimFilters = splitDim
-      joinDimCols = [rk].concat(refDim.filter(function (c) { return c !== rk }))
+      payload.filters = allFilters.filter(function (f) { return dimAssigned.indexOf(f) < 0 })
+      payload.columns = factCols
+      // 链式依赖：第 i 级维表查询还须取回「后级 left_key 落在本级维表上的列」，
+      // 否则后级合并时行上没有关联键（如 明细→商品主档→品类：商品主档须带出 cate_code）
+      joins.forEach(function (j, i) {
+        for (let k = i + 1; k < joins.length; k++) { if (dimSets[i].has(joins[k].left_key)) pushU(dimColPlans[i].refDim, joins[k].left_key) }
+      })
+      dimFilterGroups = dimColPlans.map(function (p) { return p.dimFilters })
     } else if (cols.length) payload.columns = cols
   } else if (cols.length) payload.columns = cols
   const data = await getJson(ctx, 'POST', '/api/query', payload); let rows = data.rows || []
-  if (chart.join) {
-    const dp = { table: chart.join.table, limit: 200000 }
-    if (joinDimCols) dp.columns = joinDimCols
+  for (let ji = 0; ji < joins.length; ji++) {
+    const j = joins[ji]
+    const dp = { table: j.table, limit: 200000 }
+    if (dimColPlans) { const ref = dimColPlans[ji].refDim; dp.columns = [j.right_key].concat(ref.filter(function (c) { return c !== j.right_key })) }
     const dimData = await getJson(ctx, 'POST', '/api/query', dp)
-    rows = mergeJoinRows(rows, dimData.rows || [], chart.join.left_key, chart.join.right_key)
-    if (joinDimFilters.length) rows = applyJsFilters(rows, joinDimFilters)
+    rows = mergeJoinRows(rows, dimData.rows || [], j.left_key, j.right_key, j.type)
+    if (dimFilterGroups[ji] && dimFilterGroups[ji].length) rows = applyJsFilters(rows, dimFilterGroups[ji])
   }
   if (chart.granularity === 'month') {
     // 审计 C13：月度聚合按图表 time_column 分组（缺省 order_date），不再硬编码 r.order_date
@@ -378,10 +397,12 @@ async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'te
 const filterItem = { type: 'object', additionalProperties: false, properties: { column: { type: 'string', required: true }, op: { type: 'string', required: true, enum: ['=', '!=', '>', '>=', '<', '<=', 'IN', 'NOT_IN', 'LIKE', 'ILIKE', 'BETWEEN', 'IS_NULL', 'IS_NOT_NULL'] }, value: { type: 'json' } } }
 const metricItem = { type: 'object', additionalProperties: false, properties: { column: { type: 'string', required: true }, agg: { type: 'string', required: true, enum: ['sum', 'count', 'avg', 'min', 'max'] }, alias: { type: 'string', required: true } } }
 // join：图表跨表关联（Host 端合并）。column 允许写表达式字符串（见 validateChartDef）。
-const joinItem = { type: 'object', additionalProperties: false, properties: { table: { type: 'string', required: true }, left_key: { type: 'string', required: true }, right_key: { type: 'string', required: true } } }
+// P0-4/P1-4：join 接受单对象（旧形态）或对象数组（链式，按序合并）；DSL 对象/数组联合类型
+// 不受支持，schema 放开为 json、由 validateChartDef 全量 JS 校验。
+// join 项合法键与取值见 validateChartDef 的 join 段（单对象/对象数组 + type: left|inner）。
 // group_by 项：列名字符串 / 表达式字符串 / {expr, as} 对象，DSL 用 json 放行、JS 侧校验。
 // type 枚举扩展常见 ECharts 图型；heatmap 要求恰好 2 个 group_by；radar 当前按折线渲染。
-const chartDef = { type: 'object', additionalProperties: false, properties: { type: { type: 'string', required: true, enum: ['bar', 'line', 'area', 'pie', 'scatter', 'heatmap', 'radar', 'funnel', 'gauge', 'table', 'text', 'kpi'] }, title: { type: 'string', required: true }, table: { type: 'string', required: true }, join: joinItem, filters: { type: 'array', items: filterItem }, group_by: { type: 'array', items: { type: 'json' } }, metrics: { type: 'array', items: metricItem }, sort: { type: 'object', additionalProperties: false, properties: { by: { type: 'string' }, desc: { type: 'boolean' } } }, limit: { type: 'integer' }, text: { type: 'string' }, granularity: { type: 'string', enum: ['day', 'month'] }, time_column: { type: 'string' } } }
+const chartDef = { type: 'object', additionalProperties: false, properties: { type: { type: 'string', required: true, enum: ['bar', 'line', 'area', 'pie', 'scatter', 'heatmap', 'radar', 'funnel', 'gauge', 'table', 'text', 'kpi'] }, title: { type: 'string', required: true }, table: { type: 'string', required: true }, join: { type: 'json' }, filters: { type: 'array', items: filterItem }, group_by: { type: 'array', items: { type: 'json' } }, metrics: { type: 'array', items: metricItem }, sort: { type: 'object', additionalProperties: false, properties: { by: { type: 'string' }, desc: { type: 'boolean' } } }, limit: { type: 'integer' }, text: { type: 'string' }, granularity: { type: 'string', enum: ['day', 'month'] }, time_column: { type: 'string' } } }
 const CHART_TYPES = ['bar', 'line', 'area', 'pie', 'scatter', 'heatmap', 'radar', 'funnel', 'gauge', 'table', 'text', 'kpi']
 const CHART_KEYS = ['type', 'title', 'table', 'join', 'filters', 'group_by', 'metrics', 'sort', 'limit', 'text', 'granularity', 'time_column']
 // JS 侧执行同一套约束并输出人类/模型可读的中文错误；text 图不取数，豁免 table/metrics。
@@ -435,13 +456,21 @@ function validateChartDef(def, tag) {
       if (def.granularity) errs.push(tag + ': heatmap 不支持 granularity（月度粒度会丢失第二维）')
     }
     if (def.join !== undefined) {
-      const j = def.join
-      if (!j || typeof j !== 'object' || Array.isArray(j)) errs.push(tag + ': join 必须是对象 {table, left_key, right_key}')
+      // join：单对象（旧形态）或对象数组（链式，按序合并，后级可引用前级产出列；上限 4 级）
+      const isArr = Array.isArray(def.join)
+      const list = isArr ? def.join : [def.join]
+      if (!isArr && (def.join === null || typeof def.join !== 'object')) errs.push(tag + ': join 必须是对象 {table, left_key, right_key}')
       else {
-        Object.keys(j).forEach(function (k) { if (['table', 'left_key', 'right_key'].indexOf(k) < 0) errs.push(tag + ': join 含未知字段 "' + k + '"') })
-        if (!j.table || !String(j.table).trim()) errs.push(tag + ': join.table 必填（关联维表名）')
-        if (!j.left_key || !String(j.left_key).trim()) errs.push(tag + ': join.left_key 必填（主表关联列）')
-        if (!j.right_key || !String(j.right_key).trim()) errs.push(tag + ': join.right_key 必填（维表关联列）')
+        if (isArr && list.length > 4) errs.push(tag + ': join 链最多 4 级（当前 ' + list.length + ' 级）')
+        list.forEach(function (j, ji) {
+          const jt = isArr ? tag + ': join[' + ji + ']' : tag + ': join'
+          if (!j || typeof j !== 'object' || Array.isArray(j)) { errs.push(jt + ' 必须是对象 {table, left_key, right_key}'); return }
+          Object.keys(j).forEach(function (k) { if (['table', 'left_key', 'right_key', 'type'].indexOf(k) < 0) errs.push(jt + ' 含未知字段 "' + k + '"') })
+          if (!j.table || !String(j.table).trim()) errs.push(jt + '.table 必填（关联维表名）')
+          if (!j.left_key || !String(j.left_key).trim()) errs.push(jt + '.left_key 必填（主表/上一级关联列）')
+          if (!j.right_key || !String(j.right_key).trim()) errs.push(jt + '.right_key 必填（维表关联列）')
+          if (j.type !== undefined && ['left', 'inner'].indexOf(j.type) < 0) errs.push(jt + '.type 必须为 left/inner（缺省 left，即未命中事实行保留的缺省合并语义）')
+        })
       }
     }
   }
@@ -558,8 +587,8 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     ;['vendorFile', 'storeFile', 'crawlConfigFile'].forEach(function (k) { if (CFG[k] && CFG[k].charAt(0) !== '/' && CFG[k].indexOf('://') < 0) CFG[k] = PERSIST_DIR + '/' + CFG[k] })
   })()
   const ws = ctx.get('webServer'); const fsv = ctx.get('fs'); const biApi = {}; if (ws && fsv) ctx.effect(() => ws.register({ kind: 'exact', path: ECHARTS_ROUTE, handler: async (req, res) => { try { await cfgReady; const t = await fsv.resolve(CFG.vendorFile); const buf = await fsv.readBytes(t, undefined, 4 * 1024 * 1024); res.setHeader('Content-Type', 'application/javascript'); res.setHeader('Cache-Control', 'public, max-age=3600'); res.writeHead(200); res.end(buf) } catch (e) { try { res.writeHead(404); res.end('not found') } catch (e2) {} } },}))
-  ctx.systemPrompt.section({ name: 'unmanned-store:dashboard-schema', order: 160, text: '【看板 Dashboard 生成】\n1. 调用 render_dashboard 生成看板（传入结构化 schema，顶层含 title/description/charts；销售必须 filters order_status=1；趋势图加时间过滤；字段来自 get_meta）。月度汇总柱状图可在图表定义里加 granularity:"month"，并用 time_column 指定日期列（缺省 order_date，Host 会按日聚合后合并为月）。每个图表 metrics 只允许 1 个指标（{column, agg, alias}），多指标需拆成多个图表；图表必须写 table。\n【进阶能力】图表类型支持 bar/line/area(面积图)/pie/scatter/heatmap/radar/funnel/gauge/table/text/kpi；heatmap 需恰好 2 个 group_by（第一维=X 轴、第二维=Y 轴）+1 指标；radar 当前按折线渲染。跨表关联：图表可加 join: {table:"维表", left_key:"主表列", right_key:"维表关联列"}，Host 分别取两表后按行合并，维表字段可直接用于 group_by/metrics/filters（如主表含 cate_code 时 join category_dim 后即可按 big_category 分组）。计算字段：group_by 项与 metrics.column 可写表达式字符串（如 "product_price * product_qty"、"pay_amount / product_qty"、"month(order_date)"）或 {expr:"...", as:"别名"}；支持 + - * / % ^、( )、==/!=/<>、> >= < <=、and/or/not、a?b:c、null/true/false 字面量，函数 abs/round/floor/ceil/sqrt/pow/exp/ln/log/log10/min/max/coalesce/if/year/month/quarter/day/weekday(0=周日)/length/concat/upper/lower；纯列名照旧直接取值。\n2. 生成后，工具结果会给出本次预览ID（previewId）。用一句话总结看板要点，并在回复【最后】追加 dsh-ui 围栏，ID 必须使用本次返回的 previewId（每个看板一个独立ID，互不覆盖）：\n```\ndsh-ui\n{"kind":"dashboard","id":"<previewId>"}\n```\n3. 然后询问用户是否保存到「我的看板」，确认后调用 save_dashboard 工具。也可以让用户直接点预览卡片里每个图表旁的「保存」按钮单独保存。' })
-  const renderTool = defineTool({ name: 'render_dashboard', description: '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。图表类型含 bar/line/area/pie/scatter/heatmap(双维)/radar/funnel/gauge/table/text/kpi；支持 join 跨表关联与 group_by/metrics 表达式计算字段。', parameters: { schema: { type: 'object', required: true, additionalProperties: true, properties: { title: { type: 'string' }, description: { type: 'string' }, charts: { type: 'array', items: chartDef } } } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已生成看板「' + (v.title || '') + '」，含 ' + (v.chartCount || 0) + ' 个图表。本次预览ID: ' + (v.previewId || '') + ' —— 回复末尾的 dsh-ui 围栏必须写成 {"kind":"dashboard","id":"' + (v.previewId || '') + '"}（用上面的预览ID）。候选筛选字段: ' + ((v.filterCandidates || []).join('、') || '（无维度字段）') + ' —— 请向用户确认要用作筛选的字段；用户确认后调用 save_dashboard 时通过 filter_fields 参数传入（数组，未确认则不传）。' }] }, async execute(args, exec) { const schema = args.schema || {}; assertChartDefs(schema.charts, 'charts['); let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; schemaSet(sessionId, schema); LAST_SCHEMA = { title: schema.title || '', description: schema.description || '', schema: schema };
+  ctx.systemPrompt.section({ name: 'unmanned-store:dashboard-schema', order: 160, text: '【看板 Dashboard 生成】\n1. 调用 render_dashboard 生成看板（传入结构化 schema，顶层含 title/description/charts；销售必须 filters order_status=1；趋势图加时间过滤；字段来自 get_meta）。月度汇总柱状图可在图表定义里加 granularity:"month"，并用 time_column 指定日期列（缺省 order_date，Host 会按日聚合后合并为月）。每个图表 metrics 只允许 1 个指标（{column, agg, alias}），多指标需拆成多个图表；图表必须写 table。\n【进阶能力】图表类型支持 bar/line/area(面积图)/pie/scatter/heatmap/radar/funnel/gauge/table/text/kpi；heatmap 需恰好 2 个 group_by（第一维=X 轴、第二维=Y 轴）+1 指标；radar 当前按折线渲染。跨表关联：图表可加 join 关联维表——单对象 {table:"维表", left_key:"主表列", right_key:"维表关联列"} 或对象数组（链式，最多 4 级按序合并，后级 left_key 可引用前级产出的维表列，如 销售明细→商品主档→品类维度 后按 mid_category 分组）；可选项 join.type:"left"|"inner"（缺省 left=未命中事实行保留，inner=未命中事实行剔除）。Host 分别取各表后按行合并，维表字段可直接用于 group_by/metrics/filters（如主表含 cate_code 时 join category_dim 后即可按 big_category 分组）。计算字段：group_by 项与 metrics.column 可写表达式字符串（如 "product_price * product_qty"、"pay_amount / product_qty"、"month(order_date)"）或 {expr:"...", as:"别名"}；支持 + - * / % ^、( )、==/!=/<>、> >= < <=、and/or/not、a?b:c、null/true/false 字面量，函数 abs/round/floor/ceil/sqrt/pow/exp/ln/log/log10/min/max/coalesce/if/year/month/quarter/day/weekday(0=周日)/hour/minute/datediff(后,前)=相差天数/date_add(日期,n,单位=day|week|month|year|hour|minute)/length/concat/upper/lower；纯列名照旧直接取值。相对时间筛选：filters[].value 可写相对时间记号（渲染时解析为绝对时间）——"now"=当前时刻、"today"=今天、"today-1"=昨天、"-30d"/"+7w"/"-1m"=相对当前偏移（单位 d/w/m/y/h/min）、BETWEEN 数组逐项解析或对象 {relative:"-30d"}；同图多筛选共用同一 now 快照，每次打开看板自动重算窗口；日期列用 today 系（输出 YYYY-MM-DD），时间戳列用 now 系（输出完整时刻）。\n2. 生成后，工具结果会给出本次预览ID（previewId）。用一句话总结看板要点，并在回复【最后】追加 dsh-ui 围栏，ID 必须使用本次返回的 previewId（每个看板一个独立ID，互不覆盖）：\n```\ndsh-ui\n{"kind":"dashboard","id":"<previewId>"}\n```\n3. 然后询问用户是否保存到「我的看板」，确认后调用 save_dashboard 工具。也可以让用户直接点预览卡片里每个图表旁的「保存」按钮单独保存。' })
+  const renderTool = defineTool({ name: 'render_dashboard', description: '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。图表类型含 bar/line/area/pie/scatter/heatmap(双维)/radar/funnel/gauge/table/text/kpi；支持 join 跨表关联（单对象或链式数组，join.type=left|inner）、group_by/metrics 表达式计算字段（含 hour/minute/datediff/date_add）与相对时间筛选记号（now/today-1/-30d/{relative}）。', parameters: { schema: { type: 'object', required: true, additionalProperties: true, properties: { title: { type: 'string' }, description: { type: 'string' }, charts: { type: 'array', items: chartDef } } } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已生成看板「' + (v.title || '') + '」，含 ' + (v.chartCount || 0) + ' 个图表。本次预览ID: ' + (v.previewId || '') + ' —— 回复末尾的 dsh-ui 围栏必须写成 {"kind":"dashboard","id":"' + (v.previewId || '') + '"}（用上面的预览ID）。候选筛选字段: ' + ((v.filterCandidates || []).join('、') || '（无维度字段）') + ' —— 请向用户确认要用作筛选的字段；用户确认后调用 save_dashboard 时通过 filter_fields 参数传入（数组，未确认则不传）。' }] }, async execute(args, exec) { const schema = args.schema || {}; assertChartDefs(schema.charts, 'charts['); let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; schemaSet(sessionId, schema); LAST_SCHEMA = { title: schema.title || '', description: schema.description || '', schema: schema };
         const pid = 'pv' + Date.now() + Math.random().toString(36).slice(2, 6)
         // 预览持久化失败不再静默吞掉：store 读/写错误直接抛给调用方（审计 C1 写错误传播）
         const st0 = await readStore(); st0.previews = st0.previews || {}
@@ -1032,4 +1061,4 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   } }))
 } }
 // 自检/回归钩子：仅具名导出纯函数，插件加载走 default，不影响运行时行为
-export { aggregate, buildOption, neededColumns, validateChartDef, heatColor, renderChartDef }
+export { aggregate, buildOption, neededColumns, validateChartDef, heatColor, renderChartDef, setNowProvider, resolveRelToken, currentNow }

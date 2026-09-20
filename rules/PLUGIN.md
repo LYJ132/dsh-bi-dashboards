@@ -57,6 +57,14 @@
 - **验证**：boot 日志无 error/fail；`[bi] Phase5 Host 已加载 (static v1)`；curl `/plugins/dsh-notification/client.js?rev=db1e9ee79535`、`/plugins/dsh-notification/client.js`、`/plugins/dsh-bi-dashboards/client.js` 全部 200；`dsh plugin --profile web list` 两包均在
 - **教训**：本包走「源码直发」路线时，lib 内任何外部 import 必须二选一：① 像 dsh-notification 一样 esbuild 全量打包进 lib（发布形态首选）；② package.json 声明 dependencies 且保证装到包的解析上溯路径内。symlink/link 安装下 Node 按 realpath 解析，profile node_modules 不在链上；开发期可用仓库根 node_modules 兜底（与 dsh 应用版本严格一致）。「Packages: -3」pnpm 裁剪与 loader 缓存均非本因
 
+### E7：join 泛化重构险些静默改变旧 payload——身份透传 + 双跑字节对拍兜底（2026-09-20）
+
+- **症状**：bi-capability-v2 把 join 从单对象泛化为「单对象或链式数组 + join.type」时，首轮回归发现旧定义（维表列筛选，如 cate_code='CATE_A'）的 /api/query payload 不再剔除维表筛选列（真实数据服务会 400），且链式合并后行上缺后级关联键（明细→商品→品类，商品主档未带出 cate_code，中类分组全空）
+- **根因**：两处泛化遗漏——① 旧实现把「列不在主表」的筛选从 payload 拆出（splitDim），新代码只做了分配给某一级、忘了从 payload 移除；② 链式 join 中第 i 级维表查询只取本级被引用列，没有把「后级 left_key 落在本级维表上的列」一并取回，合并链在中间断键
+- **修复**：payload.filters 按对象身份剔除已分配给维表层的筛选（resolveFilters 对静态值返回原对象，身份稳定，旧 payload 逐字节不变）；每级维表查询附加 refDim_i ∪ {后级 left_key ∈ dimSet_i}；用 mock 数据服务（8610 端口）双跑对拍——master lib 与新 lib 各跑同一组 6 个旧式定义，全部 /api/query payload + render 结果 cmp 字节相等
+- **验证**：18/18 功能检查（heatmap hour×weekday、可注入时钟的相对时间窗口平移、两级链中文名分组、left/inner 语义）+ 字节对拍 OK；node --check ×2、npm run build 通过
+- **教训**：泛化「单对象→数组」类重构，旧路径等价性必须靠机械对拍（payload+结果逐字节 diff）证明，人眼核对必然漏拆分/漏传递这类细节；解析器对非记号值返回「原对象」而非重建对象，是让未触达路径零改动的关键手法
+
 ## 开发契约速查（创造模式必读，细节见 git 历史 0098511 版 DEVELOPMENT.md）
 
 1. **声明红线**：client package.json `dsh.client.inject` 必须为 `[]`；bundle `exports.inject` 只许 `['slots']`（timer 走 window、sessions 走 ctx.get、CSS 走 injectCss）
