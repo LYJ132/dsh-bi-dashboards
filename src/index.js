@@ -58,11 +58,14 @@ async function forwardStatusPost(path) {
   } catch (e) { return { error: '状态服务请求失败: ' + String((e && e.message) || e).slice(0, 200) } }
 }
 async function getJson(ctx, method, path, body, timeoutMs) { const text = await callApi(ctx, method, path, body, timeoutMs); try { return JSON.parse(text) } catch (e) { throw new Error('数据服务返回非 JSON: ' + String(text).slice(0, 200)) } }
-// ===== 插件自更新（双形态统一入口）：git 仓库安装走 git fetch / pull --ff-only + node scripts/build.mjs；
-// 快照安装（非 git）走 DSH 原生刷新：Gitee 主通道 dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git，
-// 失败自动改用 GitHub 备通道 add github:LYJ132/dsh-bi-dashboards =====
-// 红线：git 形态只做 ff-only 拉取与构建；快照形态只调官方 add 命令；绝不跑 reset/checkout/clean 等破坏性命令，绝不触碰 ~/.dsh/bi-dashboards/（用户数据在包外）。
-// dsh plugin add 是 pnpm add 包装：github: 速记只对 GitHub 宿主生效，Gitee 主通道必须给完整 https git URL。
+// ===== 插件自更新（双形态统一入口）：git 仓库安装（含 node_modules 符号链接指向 git 仓库的形态，
+// realpath 解析后识别）走 git fetch / pull --ff-only + node scripts/build.mjs；
+// 快照安装（非 git）走压缩包自更新：Gitee 主通道 repository/archive/master.tar.gz → GitHub 备通道
+// codeload tar.gz，解压后仅按 package.json 'files' 清单（+ cordis.patch.yml）覆盖本插件安装目录，
+// 不再依赖 dsh CLI（v1.3：dsh 在宿主 PATH 缺 nvm 路径时 spawn 即 ENOENT，已从快照主通道移除） =====
+// 红线：git 形态只做 ff-only 拉取与构建；快照形态只做「清单内文件覆盖」——绝不删除/触碰清单外任何文件，
+// 绝不跑 reset/checkout/clean 等破坏性命令，绝不触碰 ~/.dsh/bi-dashboards/（用户数据在包外 PERSIST_DIR）。
+// 压缩包双通道均不可达时才降级 dsh plugin add（改经 sh -lc 登录 shell 补 nvm PATH），仍失败才报手动提示。
 const REPO_URL = 'https://gitee.com/LYJ132/dsh-bi-dashboards.git'
 // GitHub 备通道：Gitee 主通道拉取失败（网络/劫持/限流）时的自动重试目标
 const FALLBACK_REPO_URL = 'github:LYJ132/dsh-bi-dashboards'
@@ -70,6 +73,12 @@ const FALLBACK_REPO_URL = 'github:LYJ132/dsh-bi-dashboards'
 const PKG_JSON_RAW_URL = REPO_URL.replace(/\.git$/, '') + '/raw/master/package.json'
 const UPD_HINT = 'dsh plugin --profile web add ' + REPO_URL + ' 更新'
 const UPD_NATIVE_HINT = '点更新将拉取最新版本'
+// 快照形态压缩包下载通道（GET 匿名可达，实测 200）：Gitee 主通道 → GitHub codeload 备通道。
+// BI_UPD_ARCHIVE_GITEE / BI_UPD_ARCHIVE_GITHUB 环境变量仅供回归 harness 指向 mock 服务器。
+const ARCHIVE_URLS = [
+  String(process.env.BI_UPD_ARCHIVE_GITEE || 'https://gitee.com/LYJ132/dsh-bi-dashboards/repository/archive/master.tar.gz'),
+  String(process.env.BI_UPD_ARCHIVE_GITHUB || 'https://codeload.github.com/LYJ132/dsh-bi-dashboards/tar.gz/refs/heads/master')
+]
 let PKG_VERSION = '1.1.0'
 try { PKG_VERSION = String(JSON.parse(readFileSync(PKG_DIR + '/package.json', 'utf8')).version || PKG_VERSION) } catch (e) {}
 async function runCmd(ctx, argv, cwd, timeoutMs) {
@@ -79,10 +88,62 @@ async function runCmd(ctx, argv, cwd, timeoutMs) {
   return { code: outcome && typeof outcome === 'object' ? outcome.exitCode : outcome, out: (handle.collected.stdout.readFrom(0).text || '').trim(), err: (handle.collected.stderr.readFrom(0).text || '').trim() }
 }
 function updateRepoDir() {
+  // 关键：先 realpath 再验 .git——node_modules 里的包目录若是指向 git 仓库的符号链接（用户真实机器布局），
+  // 必须解析到真身才能识别出 git 安装形态；realpath 失败（目录不存在等）退回原始路径
   let real = PKG_DIR
   try { real = realpathSync(PKG_DIR) } catch (e) {}
   if (!existsSync(real + '/.git')) return null
   return real
+}
+// 递归覆盖拷贝单个 files 清单项（目录或文件）：只新建/覆盖 dst 路径内的内容，绝不删除 dst 已有其他文件
+async function overlayCopy(srcPath, dstPath) {
+  const st = await fsp.stat(srcPath)
+  if (st.isDirectory()) {
+    await fsp.mkdir(dstPath, { recursive: true })
+    for (const name of await fsp.readdir(srcPath)) await overlayCopy(srcPath + '/' + name, dstPath + '/' + name)
+  } else if (st.isFile()) {
+    await fsp.mkdir(dirname(dstPath), { recursive: true })
+    await fsp.copyFile(srcPath, dstPath)
+  }
+}
+// ===== 快照形态压缩包自更新：下载 → tar 解压 → 仅按 files 清单覆盖安装目录。 =====
+// 成功返回 {ok:true, channel}；双通道都失败返回 {ok:false, error}（调用方再降级 dsh 通道）。
+// 只覆盖、不删除：清单外文件（含用户放进包目录的任何东西）原样保留；用户数据在包外 PERSIST_DIR，天然不受影响。
+async function updateSnapshotByArchive(ctx) {
+  let fallbackList = null
+  try { fallbackList = JSON.parse(readFileSync(PKG_DIR + '/package.json', 'utf8')).files } catch (e) {}
+  let lastErr = ''
+  for (let i = 0; i < ARCHIVE_URLS.length; i++) {
+    try {
+      const res = await fetch(ARCHIVE_URLS[i], { signal: AbortSignal.timeout(120000) })
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      const buf = Buffer.from(await res.arrayBuffer())
+      if (buf.length < 1024) throw new Error('压缩包过小(' + buf.length + 'B)，疑似劫持页')
+      const tmp = String(process.env.TMPDIR || '/tmp').replace(/\/+$/, '') + '/dsh-bi-upd-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
+      await fsp.mkdir(tmp + '/x', { recursive: true })
+      await fsp.writeFile(tmp + '/repo.tar.gz', buf)
+      const tr = await runCmd(ctx, ['tar', '-xzf', tmp + '/repo.tar.gz', '-C', tmp + '/x'], '/tmp', 120000)
+      if (tr.code !== 0) throw new Error('tar 解压失败: ' + (tr.err || tr.out || ('exit ' + tr.code)).slice(0, 200))
+      // 压缩包根是一层版本化目录（Gitee: dsh-bi-dashboards-master/，GitHub: LYJ132-dsh-bi-dashboards-<sha>/），取第一个子目录
+      let top = null
+      for (const n of await fsp.readdir(tmp + '/x')) { try { if ((await fsp.stat(tmp + '/x/' + n)).isDirectory()) { top = tmp + '/x/' + n; break } } catch (e) {} }
+      if (!top) throw new Error('压缩包内未找到仓库根目录')
+      // 覆盖清单以压缩包内 package.json 'files' 为准（新版定义随包内容），读不到退回本包清单
+      let list = null
+      try { list = JSON.parse(await fsp.readFile(top + '/package.json', 'utf8')).files } catch (e) {}
+      if (!Array.isArray(list) || !list.length) list = fallbackList
+      const manifest = Array.isArray(list) ? list.slice() : []
+      if (manifest.indexOf('cordis.patch.yml') < 0) manifest.push('cordis.patch.yml')
+      for (const item of manifest) {
+        const rel = String(item).replace(/\/+$/, '')
+        if (!rel || rel.startsWith('/') || rel.split('/').indexOf('..') >= 0) continue // 安全：拒绝越出仓库根的清单项
+        try { await overlayCopy(top + '/' + rel, PKG_DIR + '/' + rel) } catch (e) { if (e && e.code === 'ENOENT') continue; throw e }
+      }
+      try { await fsp.rm(tmp, { recursive: true, force: true }) } catch (e) {}
+      return { ok: true, channel: i === 0 ? 'Gitee' : 'GitHub' }
+    } catch (e) { lastErr = String((e && e.message) || e).slice(0, 200) }
+  }
+  return { ok: false, error: lastErr || '压缩包下载失败' }
 }
 // 实时读取仓库 package.json 版本号：与 current/behind 来自同一份磁盘快照，避免未重启进程上报过期的加载期版本；读不到才退回模块常量
 function livePkgVersion(repo) {
@@ -129,41 +190,39 @@ async function performUpdate(ctx) {
   try {
     const repo = updateRepoDir()
     if (!repo) {
-      // 快照安装：DSH 原生刷新——先走 Gitee 主通道 dsh plugin --profile web add <REPO_URL>（完整 https git URL），
-      // 非零退出再自动改用 GitHub 备通道 <FALLBACK_REPO_URL>（重装最新快照；红线不变：只调官方 add，
-      // 绝不跑破坏性命令；用户数据在包外 PERSIST_DIR，不受重装影响；长超时 300s 容忍弱网 clone+装依赖）
-      let nat
-      try {
-        nat = await runCmd(ctx, ['dsh', 'plugin', '--profile', 'web', 'add', REPO_URL], '/tmp', 300000)
-      } catch (e) {
-        const em = String((e && e.message) || e)
-        return { ok: false, error: (/ENOENT/.test(em) ? '未找到 dsh 命令，无法自动更新，请在终端手动执行：' + UPD_HINT + '（' + em + '）' : em) }
+      // 快照安装：压缩包自更新（主通道，无 dsh CLI 依赖）——Gitee 主通道 → GitHub 备通道，仅按 files 清单覆盖。
+      // 双通道都不可达才降级老的 dsh plugin add 通道（改经 sh -lc 登录 shell：nvm 初始化会补全 PATH），
+      // 降级也失败才报手动提示。用户数据在包外 PERSIST_DIR，覆盖清单外文件一律不触碰。
+      const arch = await updateSnapshotByArchive(ctx)
+      if (arch && arch.ok) {
+        return { ok: true, updated: true, method: 'archive-overlay', channel: arch.channel, note: '重启 DSH 生效' + (arch.channel === 'GitHub' ? '（Gitee 拉取失败，已改用 GitHub 备通道）' : '') }
       }
-      let channel = 'Gitee'
+      async function dshAdd(url) {
+        try { return await runCmd(ctx, ['sh', '-lc', 'dsh plugin --profile web add ' + url], '/tmp', 300000) }
+        catch (e) { return { code: -1, err: String((e && e.message) || e), out: '' } }
+      }
+      const nat = await dshAdd(REPO_URL)
       if (nat.code !== 0) {
         const detail = String(nat.err || nat.out || ('exit ' + nat.code)).slice(0, 200)
         const notFound = nat.code === 127 || /ENOENT|command not found|no such file/i.test(detail)
-        if (notFound) return { ok: false, error: '未找到 dsh 命令，请手动执行：' + UPD_HINT }
-        // Gitee 主通道失败 → 自动改用 GitHub 备通道重试（同样是官方 add 命令）
-        let fb
-        try {
-          fb = await runCmd(ctx, ['dsh', 'plugin', '--profile', 'web', 'add', FALLBACK_REPO_URL], '/tmp', 300000)
-        } catch (e) {
-          fb = { code: -1, err: String((e && e.message) || e), out: '' }
-        }
+        if (notFound) return { ok: false, error: '未找到 dsh 命令，请手动执行：' + UPD_HINT + '（压缩包下载亦失败: ' + String((arch && arch.error) || '').slice(0, 120) + '）' }
+        const fb = await dshAdd(FALLBACK_REPO_URL)
         if (fb.code !== 0) {
           const fbDetail = String(fb.err || fb.out || ('exit ' + fb.code)).slice(0, 200)
-          return { ok: false, error: 'dsh plugin add 失败（Gitee 主通道与 GitHub 备通道均已尝试）: Gitee: ' + detail + '；GitHub: ' + fbDetail }
+          return { ok: false, error: '自动更新失败（压缩包下载与 dsh plugin add 降级通道均已尝试）: Gitee: ' + detail + '；GitHub: ' + fbDetail }
         }
-        channel = 'GitHub'
+        return { ok: true, updated: true, method: 'native-add', channel: 'GitHub', note: '重启 DSH 生效（压缩包下载失败，已降级 dsh 通道）' }
       }
-      return { ok: true, updated: true, method: 'native-add', channel, note: '重启 DSH 生效' + (channel === 'GitHub' ? '（Gitee 拉取失败，已改用 GitHub 备通道）' : '') }
+      return { ok: true, updated: true, method: 'native-add', channel: 'Gitee', note: '重启 DSH 生效（压缩包下载失败，已降级 dsh 通道）' }
     }
     const pre = await updateCheckState(ctx)
     if (pre.error) return { ok: false, error: pre.error }
     if (!pre.repo) return { ok: false, hint: UPD_HINT }
     if (pre.behind === 0) return { ok: true, updated: false, version: pre.version, note: '已是最新' }
     if (!pre.clean) return { ok: false, error: '工作区有改动，已拒绝更新（请先在插件目录处理未提交修改）' }
+    // detached HEAD（用户在插件目录切过提交）：不安全也不该悄悄修——如实报告并给出出路，绝不跑 checkout 等破坏性命令
+    const br = await runCmd(ctx, ['git', 'symbolic-ref', '--short', 'HEAD'], repo, 15000)
+    if (br.code !== 0) return { ok: false, error: '插件目录处于 detached HEAD 状态，无法安全自动更新（请手动执行 git checkout master 后重试，或重装插件）' }
     // from/to 一律以「更新后实时读取的版本号」为准（读不到才退回提交号），与卡片展示口径一致
     const from = pre.version ? 'v' + pre.version : pre.current
     const pull = await runCmd(ctx, ['git', 'pull', '--ff-only', 'origin', 'master'], repo, 180000)
@@ -1354,5 +1413,5 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   } }))
 } }
 // 自检/回归钩子：仅具名导出纯函数，插件加载走 default，不影响运行时行为
-export { aggregate, buildOption, neededColumns, validateChartDef, heatColor, renderChartDef, setNowProvider, resolveRelToken, currentNow, chartAcceptsFilter, applyDashboardBinding, dashboardFilterCandidates, describeCapabilities, capabilityFacts, dashboardSchemaSection }
+export { aggregate, buildOption, neededColumns, validateChartDef, heatColor, renderChartDef, setNowProvider, resolveRelToken, currentNow, chartAcceptsFilter, applyDashboardBinding, dashboardFilterCandidates, describeCapabilities, capabilityFacts, dashboardSchemaSection, updateRepoDir, performUpdate }
 export const DASH_CONTRACT_HAND = { renderTool: RENDER_TOOL_DESC, cmdPrompt: BI_CREATE_PROMPT }
