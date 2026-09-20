@@ -362,3 +362,13 @@ export function jsFilterMatch(row, f) {
   return true
 }
 export function applyJsFilters(rows, filters) { return rows.filter(function (r) { return filters.every(function (f) { return jsFilterMatch(r, f) }) }) }
+
+// ===== having（P1-3）：filters 允许 {metric: '<指标别名>', op, value} 形式，聚合后执行 =====
+// 取数前按此拆分：metric 筛选绝不进入 /api/query payload（无 column，服务端会 400）；
+// 聚合后的行上指标别名即结果列名，直接复用 jsFilterMatch（column=别名）覆盖全部 op。
+export function havingFilters(chart) { return ((chart && chart.filters) || []).filter(function (f) { return f && typeof f === 'object' && !Array.isArray(f) && f.metric !== undefined && f.metric !== '' }) }
+export function applyHaving(rows, chart) {
+  const hf = havingFilters(chart)
+  if (!hf.length) return rows
+  return rows.filter(function (r) { return hf.every(function (f) { return jsFilterMatch(r, { column: f.metric, op: f.op, value: f.value }) }) })
+}

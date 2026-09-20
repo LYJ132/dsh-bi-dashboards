@@ -64,6 +64,7 @@
    - 二维密度/交叉分布 → heatmap（恰好 2 个 group_by 维度=XY 轴 + 1 指标）
    - 派生指标（客单价/单价等列间运算）→ metrics/group_by 写表达式即可，无需预建视图
    - 24x7 时段分布 → heatmap + group_by `["hour(order_create_time)","weekday(order_date)"]`（hour/minute/datediff/date_add 等日期函数可用于 group_by/metrics 表达式）
+   - 一图多指标 → bar/line/area ≤4 个 metrics（第 2 条 series 自动挂第二 Y 轴，量纲悬殊组合免视图）、table ≤6 个聚合列、kpi 主值+对比值 ≤2 个；去重计数 `agg:"count_distinct"`（如 成交人数）；按聚合结果过滤（销售额>100 的品类）用 filters `{metric:"<alias>", op, value}`（having，聚合后执行），均无需预建视图
    - 按数据形状推荐后向用户确认
 3. **筛选项（自动推荐）**：
    - 从 group_by 维度与既有 filterable 字段提炼候选
