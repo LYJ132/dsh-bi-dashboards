@@ -33,7 +33,7 @@ DSH profile 级全局静态插件：提供「我的看板」视图标签、看�
 | `rules/CHART-ITERATION.md` | 图表方向迭代记忆（问题/原因/解决/工作流修改 四段式） | 图表模式按需读 |
 | `rules/PLUGIN.md` | **创造模式规范 + 经验账本**：开发契约速查 + E 序号经验条目 | 改插件代码前必读 |
 | `rules/COMMANDS.md` | **斜杠命令扩展工作流**：宿主侧 `ctx.commands.register` 契约、新增命令步骤、file:line 证据锚点 | 增改斜杠命令时读 |
-| `static/` | 部署包（bundle 即源码）：bi-dashboards-host / bi-dashboards-client / vendor | 插件本体 |
+| `static/` | 静态资源：`vendor/echarts.min.js` + 部署/巡检脚本（install/doctor/convert 等；v1.1.0 起插件本体是 lib 构建产物，bundle 不再放 static） | 插件随包资源 |
 | `data/` | 运行时数据 bi-dashboards.json（gitignore，不入库） | host 读写 |
 | `data-service/` | 数据服务（FastAPI :8600，白名单/MCP），`docs/docker-windows/docker-compose.yml` 编排 | 全部数据工具 |
 | `web/` | 状态服务器（:8080 status.json + 手动同步通道），crawler 容器写入状态 | SyncBar 状态源 |
