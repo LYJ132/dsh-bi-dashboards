@@ -51,7 +51,9 @@ function filtersFromSentence() {
 }
 // 生成：紧凑事实清单（机器可校验形态，供 guard 与文档对账；非模型面）
 export function capabilityFacts() {
-  const rect = ['bar', 'line', 'area'].map(function (t) { return t + '≤' + METRIC_CAPS[t] }).join('/')
+  const byCap = {}
+  ;['bar', 'line', 'area'].forEach(function (t) { (byCap[METRIC_CAPS[t]] = byCap[METRIC_CAPS[t]] || []).push(t) })
+  const rect = Object.keys(byCap).map(function (cap) { return byCap[cap].join('/') + '≤' + cap }).join(' ')
   return [
     'types: ' + CHART_TYPES.join('/'),
     'metric_caps: ' + rect + ' table≤' + METRIC_CAPS.table + ' kpi≤' + METRIC_CAPS.kpi + ' 其余1',
