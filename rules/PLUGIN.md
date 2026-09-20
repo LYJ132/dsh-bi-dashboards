@@ -65,6 +65,14 @@
 - **验证**：18/18 功能检查（heatmap hour×weekday、可注入时钟的相对时间窗口平移、两级链中文名分组、left/inner 语义）+ 字节对拍 OK；node --check ×2、npm run build 通过
 - **教训**：泛化「单对象→数组」类重构，旧路径等价性必须靠机械对拍（payload+结果逐字节 diff）证明，人眼核对必然漏拆分/漏传递这类细节；解析器对非记号值返回「原对象」而非重建对象，是让未触达路径零改动的关键手法
 
+### E8：count_distinct 不能按日/月分解累加——月粒度路径必须并集去重（2026-09-20）
+
+- **症状**：给 month-granularity 聚合加 count_distinct 时若沿用旧「按日累加再按月求和」结构，月值=各日去重数之和，与真实去重计数不符（同一用户/订单跨日重复）
+- **根因**：sum/count 可分解（日值相加即月值），count_distinct 不可分解——去重语义定义在整体集合上，只能对集合做并集后取 size；已有月路径的累加结构对可分解聚合正确、对去重聚合是陷阱
+- **修复**：月路径为 count_distinct 指标按日收集 Set（原始值字符串化，空值不计），按月并集后取 size；分组聚合路径（aggregate）每个组独立持 Set，两路径口径一致
+- **验证**：harness 用重复原始行（同日两行同 order_no）验证组路径去重；月路径 7 个独立订单跨 4 天聚合为月值 7（而非日值之和）；R1/R2 兼容双跑逐字节对拍证明旧定义零改动
+- **教训**：给聚合管线加新聚合函数时，先判断该函数在所有中间聚合层（日→月、组→sort/limit）上是否可分解；不可分解的聚合要在每一层改为携带集合，沿用「数值累加」骨架的可分解假设必然算错
+
 ## 开发契约速查（创造模式必读，细节见 git 历史 0098511 版 DEVELOPMENT.md）
 
 1. **声明红线**：client package.json `dsh.client.inject` 必须为 `[]`；bundle `exports.inject` 只许 `['slots']`（timer 走 window、sessions 走 ctx.get、CSS 走 injectCss）

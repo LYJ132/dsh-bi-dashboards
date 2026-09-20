@@ -24,3 +24,11 @@
 - **验证**：18/18 功能检查（24x7 heatmap hour×weekday、注入时钟验证相对窗口自动平移与同图 now 确定性、两级链 mid_category 中文名分组、left 保留/inner 剔除未命中行）；6 个旧式定义 payload+render 结果与 master b663926 cmp 字节相等（向后兼容）；node --check ×2 + npm run build 通过
 - **契约要点**：datediff(后,前)=相差整天数；date_add 单位 day/week/month/year/hour/minute（月/年平移钳制月末），为 P1-2 同环比预留可组合底座；相对记号对日期列用 today 系（输出 YYYY-MM-DD）、时间戳列用 now 系（输出完整时刻）；join 链上限 4 级
 - **提交**：feature/bi-capability-v2 @ 772e669 / 973641c / docs（本次）
+
+### 12.4 bi-capability-v2 r2 —— 聚合能力增强（P0-1 / P1-1 / P1-3）
+
+- **目标**：聚合半部能力提升：① 多指标/图表（按图型上限：bar/line/area ≤4、table ≤6、kpi 主值+对比值 ≤2，其余 1 个；直角坐标 2+ 指标每指标一条 series、第 2 条起 yAxisIndex:1 双 Y 轴）；② count_distinct 去重计数聚合；③ having 聚合后筛选（filters 写 {metric, op, value}，聚合后、sort/limit 前执行，与取数前筛选叠加）
+- **产出**：`src/index.js`（aggregate 组内 Set 去重 + applyHaving 前置；月粒度路径 count_distinct 按日 Set 按月并集；buildOption 多 series/双 Y 轴/kpi compare（单指标输出逐字节不变）；validateChartDef 按图型上限/alias 唯一/having 形式与 metric∈aliases 校验；DSL filterItem/metricItem 放开+AGG_ENUM；systemPrompt / render_dashboard / /bi-create / modify_chart 契约文案同步）；`src/bi-expr.js`（havingFilters/applyHaving）；`scripts/verify-bicap-r2.mjs`（8611 端口回归 harness，支持 pre-R2/新 lib 双跑字节对拍）；lib/index.js 重建
+- **验证**：R2 harness 34/34（销售额+订单量双 series、件单价第二 Y 轴 yAxisIndex=1、采购三聚合列表格、重复行 count_distinct 当日成交人数/在售SKU数、销售额>100 having 及与 pre-agg 筛选/limit 组合、各图型上限 named-field 报错、kpi value+compare）；R1 harness 18/18；R1 6 定义 + R2 6 旧式定义 payload+render 与 pre-R2 lib cmp 字节相等（向后兼容）；node --check ×2 + npm run build 通过
+- **契约要点**：多指标是通用组合规则非新图型（一条规则解锁一整类「量纲悬殊双轴」看板）；count_distinct 不可按日/月分解，月值=集合并集 size（见 PLUGIN.md E8）；having 绝不进入取数 payload（metric 无 column，服务端必 400），复用 jsFilterMatch 全 op；kpi 第 2 指标仅透出 option.compare 数值，P1-2 同环比下轮在此落点
+- **提交**：feature/bi-capability-v2 @ eb81c1b + docs（本次）
