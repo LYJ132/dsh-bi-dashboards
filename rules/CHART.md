@@ -44,7 +44,7 @@
 | 层级 | 含义 | 处理方式 |
 |------|------|----------|
 | **L0** 普通聚合 | chart_def 直接表达（单表 + 简单 filters/group_by/metrics） | 直接绘制 |
-| **L1** 复杂查询 | 窗口函数 / 同环比 / 多表关联超出单 join 限制 | 建议 PG 视图（SQL 归档 `sql/views/`），图表当普通表用；**单个维表关联与列间运算属图表原生能力**：join `{table, left_key, right_key}`（每图仅一个）+ group_by/metrics 表达式，不必建视图 |
+| **L1** 复杂查询 | 窗口函数 / 同环比 / 多表关联超出 join 能力 | 建议 PG 视图（SQL 归档 `sql/views/`），图表当普通表用；**维表关联与列间运算属图表原生能力**：join 单对象 `{table, left_key, right_key}` 或链式对象数组（最多 4 级按序合并，后级 left_key 可引用前级产出列，可选 `type:"left"|"inner"`，缺省 left=未命中事实行保留）+ group_by/metrics 表达式 + 相对时间筛选记号，不必建视图；同环比计算目前仍建议视图 |
 | **L2** 离线算法 | 预测 / 分层 / 异常检测 | 结果表方案（`bi_plugin` schema），算法脚本按例外约定或登记新位置 |
 | **L3** 在线参数化 | 实时推理端点（最后考虑） | 算法服务推理端点 |
 
@@ -63,11 +63,12 @@
    - 明细清单 → table
    - 二维密度/交叉分布 → heatmap（恰好 2 个 group_by 维度=XY 轴 + 1 指标）
    - 派生指标（客单价/单价等列间运算）→ metrics/group_by 写表达式即可，无需预建视图
+   - 24x7 时段分布 → heatmap + group_by `["hour(order_create_time)","weekday(order_date)"]`（hour/minute/datediff/date_add 等日期函数可用于 group_by/metrics 表达式）
    - 按数据形状推荐后向用户确认
 3. **筛选项（自动推荐）**：
    - 从 group_by 维度与既有 filterable 字段提炼候选
    - **销售类数据必须 filters order_status=1**
-   - 趋势类未指明时间范围时默认近 30 天并主动确认
+   - 趋势类未指明时间范围时默认近 30 天并主动确认；时间范围**优先写相对时间记号**（看板每次打开自动重算窗口）——`"today"`=今天、`"today-1"`=昨天、`"-30d"`/`"+7w"`/`"-1m"`=相对当前偏移（单位 d/w/m/y/h/min）、BETWEEN 数组逐项解析（如 `["today-29","today"]`）、对象形 `{relative:"-30d"}`；日期列用 today 系（解析为 `YYYY-MM-DD`），时间戳列用 now 系（`"now"`/`"now-2h"`，解析为完整时刻）；同一图表多个记号共用同一 now 快照
 4. **算法判定**：按上方分类定 L 层级；L2 需确认调度方式与结果新鲜度预期
 
 ---
