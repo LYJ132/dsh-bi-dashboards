@@ -5,6 +5,9 @@ import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 // 表达式求值 / join 合并 / JS 行过滤纯函数层（esbuild 打包时并入 lib/index.js）
 import { EXPR_IDENT, parseExpr, exprCols, colAccessor, metricAccessor, evalKeysIfExpr, mergeJoinRows, normalizeJoins, applyJsFilters, resolveFilters, currentNow, setNowProvider, resolveRelToken, havingFilters, applyHaving, jsFilterMatch } from './bi-expr.js'
+// 能力契约单一事实源（R4 P2-5）：图型/上限/枚举常量与 systemPrompt 事实句全部由此渲染，
+// 手写文本与生成事实的分歧由 scripts/verify-capability-guard.mjs 在 build/verify 路径 loudly 报错
+import { CHART_TYPES, METRIC_CAPS, AGG_ENUM, JOIN_MAX_LEVELS, describeCapabilities, capabilityFacts, dashboardSchemaSection } from './bi-capabilities.js'
 // PKG_DIR 必须走 fileURLToPath：URL.pathname 不做 percent 解码（含空格/中文的路径会 404），
 // Windows 下还会产生盘符前斜杠（/D:/...），readFileSync 直接失败。
 const PKG_DIR = fileURLToPath(new URL('../', import.meta.url)).replace(/[\\/]+$/, '')
@@ -201,7 +204,7 @@ function createBiCreateCommand() {
       try {
         agent.followup({
           role: 'user',
-          content: [{ type: 'text', text: '用户通过 /bi-create 请求生成看板：' + desc + '\n请按看板生成流程处理：先用 get_meta 核对字段（销售口径需 filters order_status=1，趋势图加时间过滤），再调用 render_dashboard 生成预览，回复末尾用 dsh-ui 围栏 {"kind":"dashboard","id":"<本次 previewId>"} 展示，并询问用户是否保存到「我的看板」。进阶选型（按需优先于回退 PG 视图）：二维密度/交叉分布用 type:"heatmap"（恰好 2 个 group_by 维度=XY 轴 + 1 指标）；一个图同时看多个指标直接写多个 metrics（柱/线/面积 ≤4 个，第 2 条 series 自动挂第二 Y 轴；表格 ≤6 列；去重计数用 agg:"count_distinct"）；需要他表维度（如大类）给图表加 join（单对象 {table:"维表", left_key:"主表列", right_key:"维表关联列"}，或多级链式对象数组，后级可引用前级产出列；可选 type:"left"|"inner"，缺省 left）；占比/客单价等派生指标把 metrics.column 写成表达式（如 "pay_amount / product_qty"，group_by 项同样支持，可用 hour/minute/datediff/date_add 等日期函数），字段与图型能力细节以系统提示中的看板 schema 为准；相对时间筛选把 filters[].value 写成记号（"today"=今天、"-30d"=近30天、BETWEEN ["today-29","today"] 等），看板每次打开自动重算时间窗；按聚合结果过滤（如 销售额>100 的品类）用 {metric:"<指标alias>", op, value} 形式的 filters。展示增强：指标可加 format {unit:"千"|"万", decimals, prefix:"¥"}、图表可加 value_map 枚举映射、kpi 可加 compare {type:"prev_day"|"prev_period"} 同环比（需时间筛选）、table 可加 rules 条件格式与 showTotals:true 合计行。' }],
+          content: [{ type: 'text', text: BI_CREATE_HEAD + desc + BI_CREATE_PROMPT }],
           source: { kind: 'user' }
         })
       } catch (e) {
@@ -578,20 +581,18 @@ async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'te
 // time_column 纳入定义，供月粒度聚合与取数列使用（缺省 order_date）。
 // filter：{column, op, value}（取数前筛选）或 {metric, op, value}（P1-3 having，聚合后筛选），二选一
 const filterItem = { type: 'object', additionalProperties: false, properties: { column: { type: 'string' }, metric: { type: 'string' }, op: { type: 'string', required: true, enum: ['=', '!=', '>', '>=', '<', '<=', 'IN', 'NOT_IN', 'LIKE', 'ILIKE', 'BETWEEN', 'IS_NULL', 'IS_NOT_NULL'] }, value: { type: 'json' } } }
-const AGG_ENUM = ['sum', 'count', 'avg', 'min', 'max', 'count_distinct']
+// agg 枚举移至 src/bi-capabilities.js（AGG_ENUM 单一事实源，R4 起）
 const metricItem = { type: 'object', additionalProperties: false, properties: { column: { type: 'string', required: true }, agg: { type: 'string', required: true, enum: AGG_ENUM }, alias: { type: 'string', required: true }, format: { type: 'json' } } }
-// 每图型指标上限（P0-1）：柱/线/面积 4 条 series（第 2 条起双轴）；表格 6 个聚合列；
-// kpi 主值+对比值 2 个；其余图型保持该类型自然形态（1 个指标）
-const METRIC_CAPS = { bar: 4, line: 4, area: 4, table: 6, kpi: 2 }
+// 每图型指标上限（P0-1）移至 src/bi-capabilities.js（METRIC_CAPS 单一事实源，R4 起）
 // join：图表跨表关联（Host 端合并）。column 允许写表达式字符串（见 validateChartDef）。
 // P0-4/P1-4：join 接受单对象（旧形态）或对象数组（链式，按序合并）；DSL 对象/数组联合类型
 // 不受支持，schema 放开为 json、由 validateChartDef 全量 JS 校验。
 // join 项合法键与取值见 validateChartDef 的 join 段（单对象/对象数组 + type: left|inner）。
 // group_by 项：列名字符串 / 表达式字符串 / {expr, as} 对象，DSL 用 json 放行、JS 侧校验。
 // type 枚举扩展常见 ECharts 图型；heatmap 要求恰好 2 个 group_by；radar 当前按折线渲染。
-const chartDef = { type: 'object', additionalProperties: false, properties: { type: { type: 'string', required: true, enum: ['bar', 'line', 'area', 'pie', 'scatter', 'heatmap', 'radar', 'funnel', 'gauge', 'table', 'text', 'kpi'] }, title: { type: 'string', required: true }, table: { type: 'string', required: true }, join: { type: 'json' }, filters: { type: 'array', items: filterItem }, group_by: { type: 'array', items: { type: 'json' } }, metrics: { type: 'array', items: metricItem }, sort: { type: 'object', additionalProperties: false, properties: { by: { type: 'string' }, desc: { type: 'boolean' } } }, limit: { type: 'integer' }, text: { type: 'string' }, granularity: { type: 'string', enum: ['day', 'month'] }, time_column: { type: 'string' }, value_map: { type: 'json' }, compare: { type: 'json' }, rules: { type: 'json' }, showTotals: { type: 'boolean' } } }
-const CHART_TYPES = ['bar', 'line', 'area', 'pie', 'scatter', 'heatmap', 'radar', 'funnel', 'gauge', 'table', 'text', 'kpi']
-const CHART_KEYS = ['type', 'title', 'table', 'join', 'filters', 'group_by', 'metrics', 'sort', 'limit', 'text', 'granularity', 'time_column', 'value_map', 'compare', 'rules', 'showTotals']
+const chartDef = { type: 'object', additionalProperties: false, properties: { type: { type: 'string', required: true, enum: ['bar', 'line', 'area', 'pie', 'scatter', 'heatmap', 'radar', 'funnel', 'gauge', 'table', 'text', 'kpi'] }, title: { type: 'string', required: true }, table: { type: 'string', required: true }, join: { type: 'json' }, filters: { type: 'array', items: filterItem }, group_by: { type: 'array', items: { type: 'json' } }, metrics: { type: 'array', items: metricItem }, sort: { type: 'object', additionalProperties: false, properties: { by: { type: 'string' }, desc: { type: 'boolean' } } }, limit: { type: 'integer' }, text: { type: 'string' }, granularity: { type: 'string', enum: ['day', 'month'] }, time_column: { type: 'string' }, value_map: { type: 'json' }, compare: { type: 'json' }, rules: { type: 'json' }, showTotals: { type: 'boolean' }, filtersFrom: { type: 'json' } } }
+// 图型枚举移至 src/bi-capabilities.js（CHART_TYPES 单一事实源，R4 起）
+const CHART_KEYS = ['type', 'title', 'table', 'join', 'filters', 'group_by', 'metrics', 'sort', 'limit', 'text', 'granularity', 'time_column', 'value_map', 'compare', 'rules', 'showTotals', 'filtersFrom']
 // JS 侧执行同一套约束并输出人类/模型可读的中文错误；text 图不取数，豁免 table/metrics。
 function validateChartDef(def, tag) {
   const errs = []
@@ -701,6 +702,11 @@ function validateChartDef(def, tag) {
       if (def.type !== 'table') errs.push(tag + ': showTotals 合计行仅 table 支持（当前 type "' + def.type + '"）')
       if (typeof def.showTotals !== 'boolean') errs.push(tag + ': showTotals 必须是布尔值')
     }
+    // R4 P2-3：filtersFrom 显式声明本图接受的看板级筛选字段（数组；空数组=显式 opt-out）
+    if (def.filtersFrom !== undefined) {
+      if (!Array.isArray(def.filtersFrom)) errs.push(tag + ': filtersFrom 必须是字符串数组（[] 表示不接受任何看板筛选）')
+      else def.filtersFrom.forEach(function (f, i) { if (typeof f !== 'string' || !f.trim()) errs.push(tag + ': filtersFrom[' + i + '] 必须是非空列名字符串') })
+    }
     if (def.type === 'heatmap') {
       if (!Array.isArray(def.group_by) || def.group_by.length !== 2) errs.push(tag + ': heatmap 需要恰好 2 个 group_by 维度（第一维=X 轴，第二维=Y 轴）')
       if (def.granularity) errs.push(tag + ': heatmap 不支持 granularity（月度粒度会丢失第二维）')
@@ -711,7 +717,7 @@ function validateChartDef(def, tag) {
       const list = isArr ? def.join : [def.join]
       if (!isArr && (def.join === null || typeof def.join !== 'object')) errs.push(tag + ': join 必须是对象 {table, left_key, right_key}')
       else {
-        if (isArr && list.length > 4) errs.push(tag + ': join 链最多 4 级（当前 ' + list.length + ' 级）')
+        if (isArr && list.length > JOIN_MAX_LEVELS) errs.push(tag + ': join 链最多 ' + JOIN_MAX_LEVELS + ' 级（当前 ' + list.length + ' 级）')
         list.forEach(function (j, ji) {
           const jt = isArr ? tag + ': join[' + ji + ']' : tag + ': join'
           if (!j || typeof j !== 'object' || Array.isArray(j)) { errs.push(jt + ' 必须是对象 {table, left_key, right_key}'); return }
@@ -733,6 +739,38 @@ function assertChartDefs(defs, prefix) {
 }
 // 筛选列候选只收纯列名（表达式/{expr,as} 对象不能作服务器端筛选列），join 维表纯列名可经 JS 过滤生效
 function plainFilterCols(cd) { const cols = []; (cd.group_by || []).forEach(function (g2) { if (typeof g2 === 'string' && EXPR_IDENT.test(g2) && cols.indexOf(g2) < 0) cols.push(g2) }); (cd.metrics || []).forEach(function (m2) { if (m2 && typeof m2.column === 'string' && EXPR_IDENT.test(m2.column) && cols.indexOf(m2.column) < 0) cols.push(m2.column) }); return cols.slice(0, 8) }
+// ===== R4 P2-3：看板级筛选的显式绑定 =====
+// 缺省规则（文档化，向后兼容）：筛选列命中图表取数列（neededColumns：group_by/metrics/filters/time_column
+// 及表达式引用列）才应用到该图；图表用不到该列的筛选自动跳过、不报错——join 引入维表列后，
+// 旧「concat 进每个图表」的做法会让不 join 的图表拿到未知列（服务端 400 / 引用未知列异常）。
+// 显式规则：图表声明 filtersFrom:["列",...] 时按声明走——可少选收窄（组内某字段不给本图）、
+// 也可声明本表有但本图未取的列放宽；filtersFrom:[] 表示不接受任何看板筛选。
+function chartAcceptsFilter(def, column) {
+  if (!def || typeof def !== 'object') return false
+  const col = String(column || '')
+  if (!col) return false
+  if (Array.isArray(def.filtersFrom)) return def.filtersFrom.indexOf(col) >= 0
+  return neededColumns(def).indexOf(col) >= 0
+}
+// 对一批看板级筛选（视图筛选 extras）做图级绑定裁剪：保留本图能消费的，其余跳过（不报错）
+function applyDashboardBinding(def, extras) {
+  return (extras || []).filter(function (f) { return f && f.column && chartAcceptsFilter(def, f.column) })
+}
+// 筛选候选（render_dashboard 输出）：仍取各图 group_by 的纯列名，但仅保留「至少一个图能消费」
+// 的列——filtersFrom 收窄后，只被不接收它的图表 group_by 的列不再进入候选（含仅维表可消费的列）
+function dashboardFilterCandidates(charts) {
+  const out = []
+  ;(charts || []).forEach(function (c) {
+    if (!c || !Array.isArray(c.group_by)) return
+    c.group_by.forEach(function (g) {
+      if (typeof g !== 'string' || !EXPR_IDENT.test(g) || out.indexOf(g) >= 0) return
+      ;(charts || []).forEach(function (c2) {
+        if (c2 && Array.isArray(c2.group_by) && c2.group_by.indexOf(g) >= 0 && chartAcceptsFilter(c2, g)) { out.push(g) }
+      })
+    })
+  })
+  return out
+}
 // ===== Store 层（审计 C1-C3）=====
 // 单一 async 写队列：所有落盘经 queueStoreWrite 串行，杜绝并发 writeText 交叠出半截文件；
 // 真正写盘用 temp 文件 + rename 原子替换（rename 同分区原子）。写错误抛给 RPC 调用方，不再吞掉。
@@ -796,6 +834,10 @@ function schemaSet(k, v) { if (latestSchema.has(k)) latestSchema.delete(k); late
 let LAST_SCHEMA = null
 const PREVIEW_MAX = 200
 const PREVIEW_TTL_DAYS = 30
+const RENDER_TOOL_DESC = '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。图表类型含 bar/line/area/pie/scatter/heatmap(双维)/radar/funnel/gauge/table/text/kpi；多指标按图型上限（柱/线/面积≤4、表≤6、kpi≤2，2+ 指标自动双 Y 轴）；agg 含 count_distinct 去重计数；支持 join 跨表关联（单对象或链式数组，join.type=left|inner）、group_by/metrics 表达式计算字段（含 hour/minute/datediff/date_add）、相对时间筛选记号（now/today-1/-30d/{relative}）、having 聚合后筛选（{metric, op, value}）；看板级筛选绑定 filtersFrom（缺省=筛选列在图表取数列中才应用，否则跳过不报错）。展示层：metrics.format（千/万缩放/前缀/小数位）、value_map 枚举映射、kpi compare 同环比（prev_day/prev_period）、table rules 条件格式与 showTotals 合计行。'
+const BI_CREATE_HEAD = '用户通过 /bi-create 请求生成看板：'
+const BI_CREATE_PROMPT = '\n请按看板生成流程处理：先用 get_meta 核对字段（销售口径需 filters order_status=1，趋势图加时间过滤），再调用 render_dashboard 生成预览，回复末尾用 dsh-ui 围栏 {"kind":"dashboard","id":"<本次 previewId>"} 展示，并询问用户是否保存到「我的看板」。进阶选型（按需优先于回退 PG 视图）：二维密度/交叉分布用 type:"heatmap"（恰好 2 个 group_by 维度=XY 轴 + 1 指标）；一个图同时看多个指标直接写多个 metrics（柱/线/面积 ≤4 个，第 2 条 series 自动挂第二 Y 轴；表格 ≤6 列；去重计数用 agg:"count_distinct"）；需要他表维度（如大类）给图表加 join（单对象 {table:"维表", left_key:"主表列", right_key:"维表关联列"}，或多级链式对象数组，后级可引用前级产出列；可选 type:"left"|"inner"，缺省 left）；占比/客单价等派生指标把 metrics.column 写成表达式（如 "pay_amount / product_qty"，group_by 项同样支持，可用 hour/minute/datediff/date_add 等日期函数），字段与图型能力细节以系统提示中的看板 schema 为准；相对时间筛选把 filters[].value 写成记号（"today"=今天、"-30d"=近30天、BETWEEN ["today-29","today"] 等），看板每次打开自动重算时间窗；按聚合结果过滤（如 销售额>100 的品类）用 {metric:"<指标alias>", op, value} 形式的 filters。展示增强：指标可加 format {unit:"千"|"万", decimals, prefix:"¥"}、图表可加 value_map 枚举映射、kpi 可加 compare {type:"prev_day"|"prev_period"} 同环比（需时间筛选）、table 可加 rules 条件格式与 showTotals:true 合计行；看板级筛选绑定 filtersFrom（缺省=筛选列在图表取数列中才应用，图表用不到的筛选自动跳过）。'
+
 export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tools', 'commands'], apply(ctx) {
   // 先确保持久化目录结构存在（fs 服务不保证建父目录，走 subprocess mkdir -p）
   const persistReady = (async function () { const sub = ctx.get('subprocess'); if (!sub) return; try { const h = sub.spawn({ argv: ['mkdir', '-p', PERSIST_DIR + '/vendor', PERSIST_DIR + '/data'], cwd: '/tmp', stdio: { stdin: 'ignore', stdout: { maxBytes: 65536 }, stderr: { maxBytes: 65536 } }, graceMs: 5000 }); await h.done } catch (e) {} })()
@@ -837,8 +879,8 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     ;['vendorFile', 'storeFile', 'crawlConfigFile'].forEach(function (k) { if (CFG[k] && CFG[k].charAt(0) !== '/' && CFG[k].indexOf('://') < 0) CFG[k] = PERSIST_DIR + '/' + CFG[k] })
   })()
   const ws = ctx.get('webServer'); const fsv = ctx.get('fs'); const biApi = {}; if (ws && fsv) ctx.effect(() => ws.register({ kind: 'exact', path: ECHARTS_ROUTE, handler: async (req, res) => { try { await cfgReady; const t = await fsv.resolve(CFG.vendorFile); const buf = await fsv.readBytes(t, undefined, 4 * 1024 * 1024); res.setHeader('Content-Type', 'application/javascript'); res.setHeader('Cache-Control', 'public, max-age=3600'); res.writeHead(200); res.end(buf) } catch (e) { try { res.writeHead(404); res.end('not found') } catch (e2) {} } },}))
-  ctx.systemPrompt.section({ name: 'unmanned-store:dashboard-schema', order: 160, text: '【看板 Dashboard 生成】\n1. 调用 render_dashboard 生成看板（传入结构化 schema，顶层含 title/description/charts；销售必须 filters order_status=1；趋势图加时间过滤；字段来自 get_meta）。月度汇总柱状图可在图表定义里加 granularity:"month"，并用 time_column 指定日期列（缺省 order_date，Host 会按日聚合后合并为月）。指标（{column, agg, alias}）按图型有上限：bar/line/area ≤4 个（一个图同时看销售额+订单量等），table ≤6 个聚合列，kpi 最多 2 个（第 1 个=主值，第 2 个=对比值）；其余图型 1 个指标。直角坐标图 2+ 指标时第 2 条 series 自动挂第二 Y 轴（量纲悬殊的组合如 销售额+客单价 直接写两个指标即可）；各指标别名 alias 必须唯一。agg 支持 sum/count/avg/min/max/count_distinct（去重计数，如 成交人数=count_distinct(order_no)）。图表必须写 table。\n【进阶能力】图表类型支持 bar/line/area(面积图)/pie/scatter/heatmap/radar/funnel/gauge/table/text/kpi；heatmap 需恰好 2 个 group_by（第一维=X 轴、第二维=Y 轴）+1 指标；radar 当前按折线渲染。跨表关联：图表可加 join 关联维表——单对象 {table:"维表", left_key:"主表列", right_key:"维表关联列"} 或对象数组（链式，最多 4 级按序合并，后级 left_key 可引用前级产出的维表列，如 销售明细→商品主档→品类维度 后按 mid_category 分组）；可选项 join.type:"left"|"inner"（缺省 left=未命中事实行保留，inner=未命中事实行剔除）。Host 分别取各表后按行合并，维表字段可直接用于 group_by/metrics/filters（如主表含 cate_code 时 join category_dim 后即可按 big_category 分组）。计算字段：group_by 项与 metrics.column 可写表达式字符串（如 "product_price * product_qty"、"pay_amount / product_qty"、"month(order_date)"）或 {expr:"...", as:"别名"}；支持 + - * / % ^、( )、==/!=/<>、> >= < <=、and/or/not、a?b:c、null/true/false 字面量，函数 abs/round/floor/ceil/sqrt/pow/exp/ln/log/log10/min/max/coalesce/if/year/month/quarter/day/weekday(0=周日)/hour/minute/datediff(后,前)=相差天数/date_add(日期,n,单位=day|week|month|year|hour|minute)/length/concat/upper/lower；纯列名照旧直接取值。相对时间筛选：filters[].value 可写相对时间记号（渲染时解析为绝对时间）——"now"=当前时刻、"today"=今天、"today-1"=昨天、"-30d"/"+7w"/"-1m"=相对当前偏移（单位 d/w/m/y/h/min）、BETWEEN 数组逐项解析或对象 {relative:"-30d"}；同图多筛选共用同一 now 快照，每次打开看板自动重算窗口；日期列用 today 系（输出 YYYY-MM-DD），时间戳列用 now 系（输出完整时刻）。聚合后筛选（having）：filters 项可写 {metric:"<指标alias>", op, value}（如 "销售额>100 的品类"），在聚合后按指标值过滤，可与取数前 column 筛选叠加。显示层格式化：metrics 项可加 format {unit:"千"|"万", decimals:0~6, prefix:"¥"}（表格单元格与 kpi 数值按 千/万 缩放+前缀+千分位+小数位显示，如 6698990+{unit:"万",decimals:1,prefix:"¥"} → ¥669.9万；原始聚合值不变；柱/线等数值轴仍按原始刻度）。枚举映射：图表级可加 value_map {原始值:"显示名"}（表格分组列与轴/饼图类目名显示层映射，如 {"0":"待处理","1":"已处理"}）。kpi 同环比：kpi 可加 compare {type:"prev_day"|"prev_period"}（需带时间列筛选；Host 自动把时间窗对齐平移前一日/上一等长窗口再取一次数，KPI 显示值附「较前一日/较上一周期 ±x.x%」；此时 metrics 恰 1 个，不与 granularity:"month" 混用）。表格增强：table 可加 rules [{column, op, value, style:{color,background}}] 条件格式（匹配行/单元格按规则着色；当前客户端表格暂不渲染样式，仅透出数据）与 showTotals:true（数值指标列自动追加合计行）。\n2. 生成后，工具结果会给出本次预览ID（previewId）。用一句话总结看板要点，并在回复【最后】追加 dsh-ui 围栏，ID 必须使用本次返回的 previewId（每个看板一个独立ID，互不覆盖）：\n```\ndsh-ui\n{"kind":"dashboard","id":"<previewId>"}\n```\n3. 然后询问用户是否保存到「我的看板」，确认后调用 save_dashboard 工具。也可以让用户直接点预览卡片里每个图表旁的「保存」按钮单独保存。' })
-  const renderTool = defineTool({ name: 'render_dashboard', description: '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。图表类型含 bar/line/area/pie/scatter/heatmap(双维)/radar/funnel/gauge/table/text/kpi；多指标按图型上限（柱/线/面积≤4、表≤6、kpi≤2，2+ 指标自动双 Y 轴）；agg 含 count_distinct 去重计数；支持 join 跨表关联（单对象或链式数组，join.type=left|inner）、group_by/metrics 表达式计算字段（含 hour/minute/datediff/date_add）、相对时间筛选记号（now/today-1/-30d/{relative}）与 having 聚合后筛选（{metric, op, value}）。展示层：metrics.format（千/万缩放/前缀/小数位）、value_map 枚举映射、kpi compare 同环比（prev_day/prev_period）、table rules 条件格式与 showTotals 合计行。', parameters: { schema: { type: 'object', required: true, additionalProperties: true, properties: { title: { type: 'string' }, description: { type: 'string' }, charts: { type: 'array', items: chartDef } } } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已生成看板「' + (v.title || '') + '」，含 ' + (v.chartCount || 0) + ' 个图表。本次预览ID: ' + (v.previewId || '') + ' —— 回复末尾的 dsh-ui 围栏必须写成 {"kind":"dashboard","id":"' + (v.previewId || '') + '"}（用上面的预览ID）。候选筛选字段: ' + ((v.filterCandidates || []).join('、') || '（无维度字段）') + ' —— 请向用户确认要用作筛选的字段；用户确认后调用 save_dashboard 时通过 filter_fields 参数传入（数组，未确认则不传）。' }] }, async execute(args, exec) { const schema = args.schema || {}; assertChartDefs(schema.charts, 'charts['); let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; schemaSet(sessionId, schema); LAST_SCHEMA = { title: schema.title || '', description: schema.description || '', schema: schema };
+  ctx.systemPrompt.section({ name: 'unmanned-store:dashboard-schema', order: 160, text: dashboardSchemaSection() })
+    const renderTool = defineTool({ name: 'render_dashboard', description: RENDER_TOOL_DESC, parameters: { schema: { type: 'object', required: true, additionalProperties: true, properties: { title: { type: 'string' }, description: { type: 'string' }, charts: { type: 'array', items: chartDef } } } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已生成看板「' + (v.title || '') + '」，含 ' + (v.chartCount || 0) + ' 个图表。本次预览ID: ' + (v.previewId || '') + ' —— 回复末尾的 dsh-ui 围栏必须写成 {"kind":"dashboard","id":"' + (v.previewId || '') + '"}（用上面的预览ID）。候选筛选字段: ' + ((v.filterCandidates || []).join('、') || '（无维度字段）') + ' —— 请向用户确认要用作筛选的字段；用户确认后调用 save_dashboard 时通过 filter_fields 参数传入（数组，未确认则不传）。' }] }, async execute(args, exec) { const schema = args.schema || {}; assertChartDefs(schema.charts, 'charts['); let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; schemaSet(sessionId, schema); LAST_SCHEMA = { title: schema.title || '', description: schema.description || '', schema: schema };
         const pid = 'pv' + Date.now() + Math.random().toString(36).slice(2, 6)
         // 预览持久化失败不再静默吞掉：store 读/写错误直接抛给调用方（审计 C1 写错误传播）
         const st0 = await readStore(); st0.previews = st0.previews || {}
@@ -851,10 +893,10 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
         entries.forEach(function (en, i) { if (i < PREVIEW_MAX && (nowMs - en.at) <= ttlMs) keep[en.k] = st0.previews[en.k] })
         st0.previews = keep
         await queueStoreWrite()
-        const filterCandidates = []; (schema.charts || []).forEach(function (c) { (c.group_by || []).forEach(function (g) { if (typeof g === 'string' && EXPR_IDENT.test(g) && filterCandidates.indexOf(g) < 0) filterCandidates.push(g) }) })
+        const filterCandidates = dashboardFilterCandidates(schema.charts)
         return { title: schema.title || '', chartCount: (schema.charts || []).length, previewId: pid, filterCandidates: filterCandidates } } })
   ctx.tools.register(renderTool)
-  const saveTool = defineTool({ name: 'save_dashboard', description: '把最近生成且用户确认的看板保存到「我的看板」，每个图表作为独立项加入「全部」。', parameters: { title: { type: 'string', description: '看板名称，可选' }, filter_fields: { type: 'array', items: { type: 'string' }, description: '用户确认的筛选字段（列名数组，来自生成时的候选筛选字段）' } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已保存 ' + (v.count || 0) + ' 个图表到我的看板。' }] }, async execute(args, exec) { let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; const schema = schemaGet(sessionId); if (!schema || !schema.charts || !schema.charts.length) throw new Error('没有可保存的看板，请先生成看板'); assertChartDefs(schema.charts, 'charts['); const s = await readStore(); const now = new Date().toISOString(); var base = args.title || schema.title || '看板'; (schema.charts || []).forEach(function (c, i) { const ff = Array.isArray(args.filter_fields) ? args.filter_fields.filter(function (f) { return (c.group_by || []).indexOf(f) >= 0 }) : null; if (s.layout_custom) { s.charts.unshift({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId), filterable: ff && ff.length ? ff : undefined }) } else { s.charts.push({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId) }) } }); await queueStoreWrite(); return { count: (schema.charts || []).length, saved: true } } })
+  const saveTool = defineTool({ name: 'save_dashboard', description: '把最近生成且用户确认的看板保存到「我的看板」，每个图表作为独立项加入「全部」。', parameters: { title: { type: 'string', description: '看板名称，可选' }, filter_fields: { type: 'array', items: { type: 'string' }, description: '用户确认的筛选字段（列名数组，来自生成时的候选筛选字段）' } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已保存 ' + (v.count || 0) + ' 个图表到我的看板。' }] }, async execute(args, exec) { let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; const schema = schemaGet(sessionId); if (!schema || !schema.charts || !schema.charts.length) throw new Error('没有可保存的看板，请先生成看板'); assertChartDefs(schema.charts, 'charts['); const s = await readStore(); const now = new Date().toISOString(); var base = args.title || schema.title || '看板'; (schema.charts || []).forEach(function (c, i) { const ff = Array.isArray(args.filter_fields) ? args.filter_fields.filter(function (f) { return chartAcceptsFilter(c, f) }) : null; if (s.layout_custom) { s.charts.unshift({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId), filterable: ff && ff.length ? ff : undefined }) } else { s.charts.push({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId) }) } }); await queueStoreWrite(); return { count: (schema.charts || []).length, saved: true } } })
   ctx.tools.register(saveTool)
   biApi['bi.renderLatest'] = async (args) => {
     let src = null
@@ -995,7 +1037,8 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     const uf = c.user_filter
     if (uf && uf.column) { const uv = String(uf.value === undefined || uf.value === null ? '' : uf.value); const uop = uv.startsWith('\u0000!') ? '!=' : (uf.op || '='); extras.push({ column: uf.column, op: uop, value: uop === '!=' ? uv.slice(2) : uf.value }) }
     const exs = (args && args.extras) || (args && args.extra ? [args.extra] : [])
-    exs.forEach(function (e) { if (!e || !e.column) return; const ev = String(e.value === undefined || e.value === null ? '' : e.value); const eop = ev.startsWith('\u0000!') ? '!=' : (e.op || '='); extras.push({ column: e.column, op: eop, value: eop === '!=' ? ev.slice(2) : e.value }) }); const rendered = await renderChartDef(ctx, c.chart_def, extras); rendered.id = c.id; rendered.user_filter = c.user_filter || null
+    const exsBound = applyDashboardBinding(c.chart_def || {}, exs)
+    exsBound.forEach(function (e) { if (!e || !e.column) return; const ev = String(e.value === undefined || e.value === null ? '' : e.value); const eop = ev.startsWith('\u0000!') ? '!=' : (e.op || '='); extras.push({ column: e.column, op: eop, value: eop === '!=' ? ev.slice(2) : e.value }) }); const rendered = await renderChartDef(ctx, c.chart_def, extras); rendered.id = c.id; rendered.user_filter = c.user_filter || null
     rendered.filterable = (c.filterable && c.filterable.length) ? c.filterable : plainFilterCols(c.chart_def || {}).map(function (f) { return { column: f, label: NAME_MAP_ZH.fields[f] || f } })
     rendered.table = c.chart_def ? c.chart_def.table : undefined
     return rendered }
@@ -1311,4 +1354,5 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   } }))
 } }
 // 自检/回归钩子：仅具名导出纯函数，插件加载走 default，不影响运行时行为
-export { aggregate, buildOption, neededColumns, validateChartDef, heatColor, renderChartDef, setNowProvider, resolveRelToken, currentNow }
+export { aggregate, buildOption, neededColumns, validateChartDef, heatColor, renderChartDef, setNowProvider, resolveRelToken, currentNow, chartAcceptsFilter, applyDashboardBinding, dashboardFilterCandidates, describeCapabilities, capabilityFacts, dashboardSchemaSection }
+export const DASH_CONTRACT_HAND = { renderTool: RENDER_TOOL_DESC, cmdPrompt: BI_CREATE_PROMPT }
