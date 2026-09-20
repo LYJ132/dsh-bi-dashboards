@@ -329,15 +329,22 @@ async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'te
       const factCols = []
       cols.forEach(function (c) { if (mainSet.has(c)) pushU(factCols, c); else { const i = dimSets.findIndex(function (s) { return s.has(c) }); if (i < 0) throw new Error('图表定义引用未知列 "' + c + '"（主表 ' + chart.table + ' 与关联表 ' + joins.map(function (j) { return j.table }).join('/') + ' 均无此列）'); pushU(dimColPlans[i].refDim, c) } })
       joins.forEach(function (j) { if (mainSet.has(j.left_key)) pushU(factCols, j.left_key) })
-      // 筛选分配：主表列留在 payload（服务端过滤）；维表列归入含它的层，合并后 JS 过滤
+      // 筛选分配：主表列留在 payload（服务端过滤）；维表列归入含它的层并从 payload 剔除（合并后 JS 过滤）
+      const dimAssigned = []
       allFilters.forEach(function (f) {
         if (!f || !f.column) return
         if (mainSet.has(f.column)) return
         const i = dimSets.findIndex(function (s) { return s.has(f.column) })
         const lv = i < 0 ? 0 : i
-        pushU(dimColPlans[lv].refDim, f.column); pushU(dimColPlans[lv].dimFilters, f)
+        pushU(dimColPlans[lv].refDim, f.column); pushU(dimColPlans[lv].dimFilters, f); dimAssigned.push(f)
       })
+      payload.filters = allFilters.filter(function (f) { return dimAssigned.indexOf(f) < 0 })
       payload.columns = factCols
+      // 链式依赖：第 i 级维表查询还须取回「后级 left_key 落在本级维表上的列」，
+      // 否则后级合并时行上没有关联键（如 明细→商品主档→品类：商品主档须带出 cate_code）
+      joins.forEach(function (j, i) {
+        for (let k = i + 1; k < joins.length; k++) { if (dimSets[i].has(joins[k].left_key)) pushU(dimColPlans[i].refDim, joins[k].left_key) }
+      })
       dimFilterGroups = dimColPlans.map(function (p) { return p.dimFilters })
     } else if (cols.length) payload.columns = cols
   } else if (cols.length) payload.columns = cols
