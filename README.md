@@ -21,7 +21,7 @@ DSH profile 级全局静态插件：提供「我的看板」视图标签、看�
 | 命令 | 用法 | 示例 |
 |---|---|---|
 | `/bi-update` | 检查并更新 BI 插件到最新版（与设置页「一键更新」同一条执行路径：git 安装走 pull+build，快照安装走原生 `dsh plugin add`） | `/bi-update` |
-| `/bi-create` | 用自然语言描述生成 BI 看板（描述将作为消息交给模型，触发 get_meta→render_dashboard→dsh-ui 预览流程；提示词已含进阶选型：heatmap 双维密度、单表 join 跨表维度、表达式计算字段） | `/bi-create 近30天各品类销售额趋势` |
+| `/bi-create` | 用自然语言描述生成 BI 看板（描述将作为消息交给模型，触发 get_meta→render_dashboard→dsh-ui 预览流程；提示词已含进阶选型：heatmap 双维密度、单表/链式 join 跨表维度、表达式计算字段、相对时间筛选记号、多指标+双 Y 轴、count_distinct/having、kpi 同环比、指标格式化/枚举映射/表格条件格式、看板筛选显式绑定 filtersFrom） | `/bi-create 近30天各品类销售额趋势` |
 
 > 注：插件更新后需**重启 DSH** 生效。扩展（新增/修改斜杠命令）工作流见 `rules/COMMANDS.md`。
 
