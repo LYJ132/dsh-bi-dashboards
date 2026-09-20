@@ -201,7 +201,7 @@ function createBiCreateCommand() {
       try {
         agent.followup({
           role: 'user',
-          content: [{ type: 'text', text: '用户通过 /bi-create 请求生成看板：' + desc + '\n请按看板生成流程处理：先用 get_meta 核对字段（销售口径需 filters order_status=1，趋势图加时间过滤），再调用 render_dashboard 生成预览，回复末尾用 dsh-ui 围栏 {"kind":"dashboard","id":"<本次 previewId>"} 展示，并询问用户是否保存到「我的看板」。' }],
+          content: [{ type: 'text', text: '用户通过 /bi-create 请求生成看板：' + desc + '\n请按看板生成流程处理：先用 get_meta 核对字段（销售口径需 filters order_status=1，趋势图加时间过滤），再调用 render_dashboard 生成预览，回复末尾用 dsh-ui 围栏 {"kind":"dashboard","id":"<本次 previewId>"} 展示，并询问用户是否保存到「我的看板」。进阶选型（按需优先于回退 PG 视图）：二维密度/交叉分布用 type:"heatmap"（恰好 2 个 group_by 维度=XY 轴 + 1 指标）；需要他表维度（如大类）给图表加 join: {table:"维表", left_key:"主表列", right_key:"维表关联列"}（每图仅允许一个关联）；占比/客单价等派生指标把 metrics.column 写成表达式（如 "pay_amount / product_qty"，group_by 项同样支持），字段与图型能力细节以系统提示中的看板 schema 为准。' }],
           source: { kind: 'user' }
         })
       } catch (e) {
