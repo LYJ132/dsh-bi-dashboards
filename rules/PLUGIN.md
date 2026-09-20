@@ -98,3 +98,11 @@
 5. **运行时差异**：CSS 类样式被全局压制（交互控件用内联样式）；SVG 表现属性不支持 CSS 变量；host 侧 fire-and-forget 子进程会消失（触发类走 :8080 通道）；asyncpg JSONB 读回 str 需 json.loads；web/ 状态服务器已迁 `bi-plugin/web/`（crawler 的 /opt/web 挂载指向此处）
 6. **部署**：编辑 `static/bi-dashboards-*/lib/*.js`（bundle 即源码）→ node --check → 三道门 → cp 到 node_modules → **重启 DSH 生效**（client 刷新即生效）；机器相关路径/地址（dataApi/statusUrl/vendorFile/storeFile/crawlConfigFile）统一在包目录 `config.json`（缺失自动生成默认值；本机 config 指向 bi-plugin 原路径），异机安装走 INSTALL.md + `static/scripts/install-to-dsh.sh`
 7. **UI 文本极简 + icon 按钮**：交互按钮优先用 SVG icon（24 网格 MiniIcon 组件，Material path），非必要不用文字按钮；界面提示语最小化（错误/状态反馈除外），说明性长文案一律写文档不进 UI；标签只写必要名词（如「数据主机」「其他」）
+
+### E11：快照自更新 ENOENT——dsh CLI 从主通道降级为兜底，清单内覆盖替换「绝不越界」（2026-09-20）
+
+- **症状**：用户快照安装的宿主机点「一键更新」报 `未找到 dsh 命令…ENOENT`——performUpdate 在 DSH 宿主进程内 spawn `dsh plugin add`，而宿主进程 PATH 没有 nvm 路径，`dsh` 根本不可达；用户决策：若 dsh CLI 对更新无增益就彻底移出更新流。
+- **根因**：把「重装快照」寄托在宿主进程内调外部 CLI 上，等于依赖一个宿主自己没注入的 PATH；且 pnpm add 重装会整目录替换，安全面过大。
+- **修复**：快照形态改为**压缩包自更新**——直接 GET 下载仓库 tar.gz（Gitee `repository/archive/master.tar.gz` 主通道匿名可达实测 200，GitHub codeload 备通道），`tar -xzf` 解包后**仅按 package.json `files` 清单 + cordis.patch.yml 逐项覆盖**插件安装目录：只新建/覆盖、绝不删除清单外任何文件（新红线取代旧「只调官方 add」红线；用户数据在包外 PERSIST_DIR 不受影响）；`lib/index.js` 已提交且零外部 bare import，目标机无需装依赖重建。dsh CLI 降级为最后兜底且改经 `sh -lc`（登录 shell 补 nvm PATH），仍失败才报手动提示（文案风格保留）。git 形态补 detached HEAD 优雅报告（拒绝但不 brick）；`updateRepoDir` 先 realpath 再验 `.git`，node_modules 符号链接指向 git 仓库的安装形态正确走 git pull 路径。
+- **验证**：`scripts/verify-updstab-r6.mjs`（8614 端口，mock 压缩包服务器）33/33：S1 符号链接 realpath 探针（node --preserve-symlinks 下 PKG_DIR 本身是符号链接，仅 realpathSync 能识别）；S2 压缩包覆盖端到端 + dsh 全程未被调用 + 清单外/PERSIST_DIR 哨兵文件原样；S3 Gitee 503 → GitHub 备通道；S4/S5/S6 双通道不可达 → `sh -lc` 降级 → 127/非127/成功三分支；S7 detached HEAD 报告且无破坏性 git 命令。R1-R4 harness 全绿 + build/guard/node --check 通过。
+- **教训**：进程内自动更新不要依赖宿主没给的 CLI/PATH——能纯 Node（fetch + tar + fs 覆盖）就纯 Node；「只覆盖清单内路径」比「整目录重装」的安全不变量更容易验证（哨兵文件断言即可机器证明）。

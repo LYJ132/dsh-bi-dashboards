@@ -13,6 +13,14 @@
 
 本包用于在**完全无网络**的数据宿主机上离线更新 dsh-bi-dashboards 插件。包内已包含构建产物 `lib/index.js`、`lib/client.js`、`static/`、`cordis.patch.yml`、`package.json`、`scripts/` 与 `INSTALL.md`，无需再执行任何构建或联网操作。
 
+## 联网宿主机的自动更新通道（v1.3 起）
+
+- **git 安装**（含 node_modules 内符号链接指向 git 仓库）：`/bi-update` / 设置页「一键更新」走 `git fetch` + `pull --ff-only` + 重建；工作区脏或 detached HEAD 时如实报告并拒绝，绝不跑 reset/checkout/clean 等破坏性命令。
+- **快照安装**（非 git）：**不再依赖 `dsh` CLI**（宿主 PATH 缺 nvm 路径时 `dsh` spawn 即 ENOENT）。插件直接下载仓库 tar.gz——Gitee `https://gitee.com/LYJ132/dsh-bi-dashboards/repository/archive/master.tar.gz`（匿名 GET 实测 200）为主通道，GitHub codeload tar.gz 为备通道——解压后**仅按 `package.json` `files` 清单 + cordis.patch.yml 覆盖插件安装目录**，清单外文件（含用户放进包目录的任何文件）一律不删除不触碰；用户数据在包外 `PERSIST_DIR`（`~/.dsh/bi-dashboards/`），天然不受影响。`lib/index.js` 已提交且零外部 bare import，目标机无需装依赖或重建。
+- **降级链**：压缩包双通道均不可达 → 退回 `sh -lc 'dsh plugin add …'`（登录 shell 初始化 nvm 补 PATH）→ 仍失败则报手动提示（`dsh plugin --profile web add https://gitee.com/LYJ132/dsh-bi-dashboards.git 更新`）。更新结果语义不变：`重启 DSH 生效`。
+
+本文件其余部分针对**完全无网络**的宿主机。
+
 ## 包内容核对
 
 | 内容 | 说明 |

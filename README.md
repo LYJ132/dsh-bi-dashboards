@@ -20,7 +20,7 @@ DSH profile 级全局静态插件：提供「我的看板」视图标签、看�
 
 | 命令 | 用法 | 示例 |
 |---|---|---|
-| `/bi-update` | 检查并更新 BI 插件到最新版（与设置页「一键更新」同一条执行路径：git 安装走 pull+build，快照安装走原生 `dsh plugin add`） | `/bi-update` |
+| `/bi-update` | 检查并更新 BI 插件到最新版（与设置页「一键更新」同一条执行路径：git 安装（含 node_modules 内符号链接指向 git 仓库）走 pull+build；快照安装走压缩包自更新——Gitee archive 主通道 → GitHub codeload 备通道，仅按 `files` 清单 + cordis.patch.yml 覆盖安装目录、清单外文件一律不触碰；压缩包双通道均不可达才降级 `dsh plugin add`，仍失败报手动提示） | `/bi-update` |
 | `/bi-create` | 用自然语言描述生成 BI 看板（描述将作为消息交给模型，触发 get_meta→render_dashboard→dsh-ui 预览流程；提示词已含进阶选型：heatmap 双维密度、单表/链式 join 跨表维度、表达式计算字段、相对时间筛选记号、多指标+双 Y 轴、count_distinct/having、kpi 同环比、指标格式化/枚举映射/表格条件格式、看板筛选显式绑定 filtersFrom） | `/bi-create 近30天各品类销售额趋势` |
 
 > 注：插件更新后需**重启 DSH** 生效。扩展（新增/修改斜杠命令）工作流见 `rules/COMMANDS.md`。
@@ -43,7 +43,7 @@ DSH profile 级全局静态插件：提供「我的看板」视图标签、看�
 
 - `src/` 经 `pnpm build`（esbuild）打包成零外部依赖的 `lib/index.js`；`package.json` 的 `files`（lib、static、cordis.patch.yml 等）定义 `dsh plugin add` 安装到 `~/.dsh/profiles/web/node_modules/` 的内容。
 - **离线更新包**：每次发布（`chore(release): vX.Y.Z`）后必须运行 `bash scripts/make-offline-package.sh` 刷新 `dist/bi-dashboards-offline-<version>-<shortsha>.tar.gz`（`dist/` 不入库），供无网络宿主机按 `OFFLINE-UPDATE.md` 手动替换。v1.1.7 发布时曾遗漏此步，导致 dist 停留在 1.1.6 包——现已固化为脚本 + 本条约定。
-- git 安装的宿主机走 `/bi-update`（pull + 重建 lib），不依赖 dist 离线包。
+- git 安装的宿主机走 `/bi-update`（pull + 重建 lib），不依赖 dist 离线包；快照安装（`~/.dsh/profiles/web/node_modules/` 下的普通目录）走 v1.3 起的压缩包自更新——不再依赖 `dsh` CLI（其常因宿主 PATH 缺 nvm 路径 spawn 即 ENOENT），改由插件直接下载仓库 tar.gz（Gitee `repository/archive/master.tar.gz` 主通道、GitHub codeload 备通道，匿名 GET 可达）并按 `package.json` `files` 清单覆盖自身目录；`lib/index.js` 已提交且零外部 bare import，目标机无需装依赖或重建。
 
 ## 模式边界
 
