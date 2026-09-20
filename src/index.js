@@ -118,16 +118,21 @@ async function updateSnapshotByArchive(ctx) {
       const res = await fetch(ARCHIVE_URLS[i], { signal: AbortSignal.timeout(120000) })
       if (!res.ok) throw new Error('HTTP ' + res.status)
       const buf = Buffer.from(await res.arrayBuffer())
-      if (buf.length < 1024) throw new Error('压缩包过小(' + buf.length + 'B)，疑似劫持页')
+      if (buf.length < 64) throw new Error('压缩包过小(' + buf.length + 'B)，疑似劫持页')
       const tmp = String(process.env.TMPDIR || '/tmp').replace(/\/+$/, '') + '/dsh-bi-upd-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
       await fsp.mkdir(tmp + '/x', { recursive: true })
       await fsp.writeFile(tmp + '/repo.tar.gz', buf)
       const tr = await runCmd(ctx, ['tar', '-xzf', tmp + '/repo.tar.gz', '-C', tmp + '/x'], '/tmp', 120000)
       if (tr.code !== 0) throw new Error('tar 解压失败: ' + (tr.err || tr.out || ('exit ' + tr.code)).slice(0, 200))
-      // 压缩包根是一层版本化目录（Gitee: dsh-bi-dashboards-master/，GitHub: LYJ132-dsh-bi-dashboards-<sha>/），取第一个子目录
-      let top = null
-      for (const n of await fsp.readdir(tmp + '/x')) { try { if ((await fsp.stat(tmp + '/x/' + n)).isDirectory()) { top = tmp + '/x/' + n; break } } catch (e) {} }
-      if (!top) throw new Error('压缩包内未找到仓库根目录')
+      // 压缩包根可能是单层版本化目录（Gitee: dsh-bi-dashboards-master/，GitHub: LYJ132-...-<sha>/），
+      // 也可能直接就是仓库内容（tar -C repo .）——先看根下是否直接有 package.json，否则取第一个子目录
+      let top = tmp + '/x'
+      if (!existsSync(top + '/package.json')) {
+        let found = null
+        for (const n of await fsp.readdir(top)) { try { if ((await fsp.stat(top + '/' + n)).isDirectory()) { found = top + '/' + n; break } } catch (e) {} }
+        if (!found) throw new Error('压缩包内未找到仓库根目录')
+        top = found
+      }
       // 覆盖清单以压缩包内 package.json 'files' 为准（新版定义随包内容），读不到退回本包清单
       let list = null
       try { list = JSON.parse(await fsp.readFile(top + '/package.json', 'utf8')).files } catch (e) {}
