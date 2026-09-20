@@ -79,3 +79,11 @@
 - **E7-E10 与 ch.12 核对**：四章经验各附当轮 harness/对拍验证记录，与实际交付物（scripts/verify-bicap-r1..r4.mjs、verify-capability-guard.mjs、src/bi-capabilities.js）一一对应，无宣称未落地项。
 - **提交**：feature/bi-capability-v2 @ 337d02f（文档一致性）+ 本条（本次）
 
+
+### 12.8 update-stability r6 —— 插件自更新加固：快照形态压缩包自更新，dsh CLI 降为兜底（用户诊断 ENOENT）
+
+- **目标**：用户报告快照安装宿主机点「一键更新」报 `未找到 dsh 命令…ENOENT`——DSH 宿主进程 PATH 缺 nvm 路径，performUpdate spawn 的 `dsh` CLI 根本不可达；用户决策：dsh CLI 对更新无增益即彻底移出主通道。三项加固：① `updateRepoDir` 先 `fs.realpath` 再验 `.git`（node_modules 符号链接指向 git 仓库的真实机器布局正确走 git pull 路径）；② 快照安装脱离 dsh CLI：下载仓库压缩包（Gitee `repository/archive/master.tar.gz` 主通道匿名 GET 实测 200 → GitHub codeload tar.gz 备通道），解压后**仅按 package.json `files` 清单 + cordis.patch.yml 覆盖**插件安装目录——绝不删除/触碰清单外任何文件（新红线取代旧「只调官方 add」红线，用户数据在包外 PERSIST_DIR）；lib/index.js 已提交且零外部 bare import，目标机无需装依赖重建；③ 压缩包双通道均不可达才降级 dsh plugin add（改经 `sh -lc` 登录 shell 补 PATH），仍失败报手动提示（文案风格保留，UPD_NATIVE_HINT 不变）；git 形态补 detached HEAD 优雅报告（拒绝但不 brick，绝不跑 checkout/reset）
+- **产出**：`src/index.js`（updateRepoDir realpath 注释 + ARCHIVE_URLS（BI_UPD_ARCHIVE_GITEE/GITHUB 环境变量仅供 harness）+ overlayCopy/updateSnapshotByArchive + performUpdate 快照分支重写为「压缩包 → sh -lc dsh 降级 → 手动提示」三级链 + detached HEAD 检查 + 导出 updateRepoDir/performUpdate 供 harness）；lib/index.js 重建；`scripts/verify-updstab-r6.mjs`（8614 端口 mock 压缩包服务器，真实 git 沙仓 + 真实 tar）；README /bi-update 行与部署链节、OFFLINE-UPDATE.md 新增「联网宿主机的自动更新通道」节、PLUGIN.md E11
+- **验证**：R6 harness 33/33（S1 符号链接 realpath 探针经 node --preserve-symlinks 使 PKG_DIR 本身为符号链接、仅 realpathSync 可识别 + 直连对照；S2 端到端 Gitee 压缩包覆盖 + dsh 全程零调用 + 清单外 unrelated.txt/vendor/keep.txt/data/user.json 哨兵原样 + rogue 文件不落盘 + PERSIST_DIR 哨兵原样 + 「重启 DSH 生效」语义；S3 Gitee 503→GitHub 备通道 note；S4 双通道不可达→`sh -lc dsh`→127→「未找到 dsh 命令」手动提示且安装目录原样；S5 降级非 127 失败→双通道合并报错；S6 降级成功→native-add+降级 note；S7 detached HEAD 优雅报告 + argvLog 证明无破坏性 git 命令）；R1 18/18、R2 34/34、R3 35/35、R4 27/0；npm run build + capability guard（19 记号）+ node --check ×3 通过
+- **契约要点**：快照更新安全不变量从「只调官方 add」换成「清单内覆盖、清单外绝不触碰」（哨兵文件断言可机器证明，比整目录重装更易验证）；覆盖清单以压缩包内新 package.json `files` 为准（新版定义随包内容），`cordis.patch.yml` 强制在列；清单项拒绝绝对路径与 `..` 越界；进程内自动更新不依赖宿主未注入的 CLI/PATH（E11 教训）
+- **提交**：feature/update-stability @ fd461f6 / 50a6164 / d425dc2（本次）
