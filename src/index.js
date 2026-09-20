@@ -3,6 +3,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { existsSync, readFileSync, realpathSync, promises as fsp } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
+// 表达式求值 / join 合并 / JS 行过滤纯函数层（esbuild 打包时并入 lib/index.js）
+import { EXPR_IDENT, parseExpr, exprCols, colAccessor, metricAccessor, evalKeysIfExpr, mergeJoinRows, applyJsFilters } from './bi-expr.js'
 // PKG_DIR 必须走 fileURLToPath：URL.pathname 不做 percent 解码（含空格/中文的路径会 404），
 // Windows 下还会产生盘符前斜杠（/D:/...），readFileSync 直接失败。
 const PKG_DIR = fileURLToPath(new URL('../', import.meta.url)).replace(/[\\/]+$/, '')
@@ -218,22 +220,138 @@ function cmpVal(a, b) {
   if (/\d/.test(sa) && /\d/.test(sb)) { const ta = Date.parse(sa), tb = Date.parse(sb); if (!Number.isNaN(ta) && !Number.isNaN(tb)) return ta - tb }
   return sa.localeCompare(sb)
 }
-function aggregate(rows, chart) { const gb = chart.group_by || []; const metrics = chart.metrics || []; const groups = new Map(); for (const row of rows) { const key = gb.map(c => String(row[c] == null ? '' : row[c])).join('\u0001'); let g = groups.get(key); if (!g) { g = { gvals: gb.map(c => (row[c] == null ? '' : row[c])), sum: metrics.map(() => 0), n: metrics.map(() => 0), vn: metrics.map(() => 0), min: metrics.map(() => Infinity), max: metrics.map(() => -Infinity) }; groups.set(key, g) }; metrics.forEach((m, i) => { g.n[i] += 1; const v = Number(row[m.column]); if (Number.isFinite(v)) { g.sum[i] += v; g.vn[i] += 1; if (v < g.min[i]) g.min[i] = v; if (v > g.max[i]) g.max[i] = v } }) }; let out = []; for (const g of groups.values()) { const r = {}; gb.forEach((c, i) => { r[c] = g.gvals[i] }); metrics.forEach((m, i) => { let val; if (m.agg === 'count') val = g.n[i]; else if (m.agg === 'avg') val = g.vn[i] ? g.sum[i] / g.vn[i] : 0; else if (m.agg === 'min') val = g.vn[i] ? g.min[i] : 0; else if (m.agg === 'max') val = g.vn[i] ? g.max[i] : 0; else val = g.sum[i]; r[m.alias] = Math.round(val * 100) / 100 }); out.push(r) }; if (chart.sort && chart.sort.by) { const by = chart.sort.by, desc = chart.sort.desc !== false; out = out.sort((a, b) => { const c = cmpVal(a[by], b[by]); return desc ? -c : c }) }; if (chart.limit) out = out.slice(0, chart.limit); return out }
-function buildOption(chart, rows) { if (chart.type === 'text') return { type: 'text', title: chart.title, text: chart.text || '' }; const metric = chart.metrics && chart.metrics[0]; const gb = (chart.group_by || [])[0]; if (chart.type === 'table') { const tcols = rows.length ? Object.keys(rows[0]) : []; const tl = {}; tcols.forEach(function (c2) { tl[c2] = NAME_MAP_ZH.fields[c2] || c2 }); return { type: 'table', title: chart.title, columns: tcols, columnLabels: tl, rows } } if (chart.type === 'kpi') return { type: 'kpi', title: chart.title, value: rows.length && metric ? rows[0][metric.alias] : null }; const names = rows.map(r => String(r[gb] != null ? r[gb] : '')); const vals = rows.map(r => Number(metric ? r[metric.alias] : 0)); if (chart.type === 'pie') return { type: 'pie', title: chart.title, series: [{ type: 'pie', radius: ['30%', '65%'], data: rows.map((r, i) => ({ name: names[i], value: vals[i] })) }] }; return { type: chart.type, title: chart.title, xAxis: { type: 'category', data: names, axisLabel: { rotate: 30, interval: 0 } }, yAxis: { type: 'value' }, series: [{ type: chart.type, data: vals, name: metric ? metric.alias : '' }] } }
-function neededColumns(chart) { const s = new Set(); (chart.group_by || []).forEach(c => s.add(c)); (chart.metrics || []).forEach(m => m.column && s.add(m.column)); (chart.filters || []).forEach(f => f.column && s.add(f.column)); const tc = chart.time_column || (chart.granularity === 'month' ? 'order_date' : null); if (tc) s.add(tc); return Array.from(s) }
-async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'text') return { type: 'text', title: chart.title || '', text: chart.text || '' }; const payload = { table: chart.table, filters: (chart.filters || []).concat(extraFilters || []), limit: 200000 }; const cols = neededColumns(chart); if (cols.length) payload.columns = cols; const data = await getJson(ctx, 'POST', '/api/query', payload); const rows = data.rows || []
+// 表达式感知聚合（feat-20260920-chart-schema）：group_by 项与指标列可为表达式；
+// 纯列名旧定义的分组键/聚合值/别名输出与原实现逐键一致（访问器对旧输入是恒等映射）。
+function aggregate(rows, chart) { const gb = chart.group_by || []; const metrics = chart.metrics || []; const gacc = gb.map(colAccessor); const macc = metrics.map(metricAccessor); const keys = evalKeysIfExpr(chart, rows); const groups = new Map(); for (const row of rows) { const gvals = gacc.map(function (a) { const v = a.get(row, keys); return v === null || v === undefined ? '' : v }); const key = gvals.map(String).join('\u0001'); let g = groups.get(key); if (!g) { g = { gvals: gvals, sum: metrics.map(() => 0), n: metrics.map(() => 0), vn: metrics.map(() => 0), min: metrics.map(() => Infinity), max: metrics.map(() => -Infinity) }; groups.set(key, g) }; metrics.forEach((m, i) => { g.n[i] += 1; const v = Number(macc[i].num(row, keys)); if (Number.isFinite(v)) { g.sum[i] += v; g.vn[i] += 1; if (v < g.min[i]) g.min[i] = v; if (v > g.max[i]) g.max[i] = v } }) }; let out = []; for (const g of groups.values()) { const r = {}; gacc.forEach((a, i) => { r[a.label] = g.gvals[i] }); metrics.forEach((m, i) => { let val; if (m.agg === 'count') val = g.n[i]; else if (m.agg === 'avg') val = g.vn[i] ? g.sum[i] / g.vn[i] : 0; else if (m.agg === 'min') val = g.vn[i] ? g.min[i] : 0; else if (m.agg === 'max') val = g.vn[i] ? g.max[i] : 0; else val = g.sum[i]; r[m.alias] = Math.round(val * 100) / 100 }); out.push(r) }; if (chart.sort && chart.sort.by) { const by = chart.sort.by, desc = chart.sort.desc !== false; out = out.sort((a, b) => { const c = cmpVal(a[by], b[by]); return desc ? -c : c }) }; if (chart.limit) out = out.slice(0, chart.limit); return out }
+// 热力图色带（ColorBrewer Oranges 五档线性插值）：单元格按值预着色，
+// 同时 option 里输出规范 visualMap——当前 client 的 toEcharts 只透传 series，
+// itemStyle 着色保证热力图在现有渲染层也能正确显示色阶。
+const HEAT_RAMP = ['#fff5eb', '#fdd0a2', '#fd8d3c', '#d94801', '#7f2704']
+function hexToRgb(h) { return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)] }
+function heatColor(v, min, max) {
+  const span = max - min
+  const t = span > 0 ? Math.max(0, Math.min(1, (v - min) / span)) : 0.5
+  const seg = HEAT_RAMP.length - 1, pos = t * seg, i = Math.min(seg - 1, Math.floor(pos)), f = pos - i
+  const c1 = hexToRgb(HEAT_RAMP[i]), c2 = hexToRgb(HEAT_RAMP[i + 1])
+  return 'rgb(' + Math.round(c1[0] + (c2[0] - c1[0]) * f) + ',' + Math.round(c1[1] + (c2[1] - c1[1]) * f) + ',' + Math.round(c1[2] + (c2[2] - c1[2]) * f) + ')'
+}
+// 表达式感知的 option 构建：分组列名统一走 colAccessor().label（纯列名旧行为不变）
+function buildOption(chart, rows) {
+  if (chart.type === 'text') return { type: 'text', title: chart.title, text: chart.text || '' }
+  const metric = chart.metrics && chart.metrics[0]
+  const gbs = chart.group_by || []
+  if (chart.type === 'table') { const tcols = rows.length ? Object.keys(rows[0]) : []; const tl = {}; tcols.forEach(function (c2) { tl[c2] = NAME_MAP_ZH.fields[c2] || c2 }); return { type: 'table', title: chart.title, columns: tcols, columnLabels: tl, rows } }
+  if (chart.type === 'kpi') return { type: 'kpi', title: chart.title, value: rows.length && metric ? rows[0][metric.alias] : null }
+  const g0 = gbs.length ? colAccessor(gbs[0]) : null
+  const names = rows.map(function (r) { const v = g0 ? r[g0.label] : ''; return String(v != null ? v : '') })
+  const vals = rows.map(function (r) { return Number(metric ? r[metric.alias] : 0) })
+  if (chart.type === 'pie') return { type: 'pie', title: chart.title, series: [{ type: 'pie', radius: ['30%', '65%'], data: rows.map((r, i) => ({ name: names[i], value: vals[i] })) }] }
+  if (chart.type === 'heatmap') {
+    // 热力图：group_by[0]=X 轴维度、group_by[1]=Y 轴维度、1 个指标 → [xIdx,yIdx,value] 单元格矩阵 + visualMap
+    if (gbs.length !== 2 || !metric) throw new Error('热力图需要恰好 2 个 group_by 维度与 1 个指标（当前 ' + gbs.length + ' 个维度）')
+    const a1 = colAccessor(gbs[0]), a2 = colAccessor(gbs[1])
+    const xs = [], ys = [], xix = new Map(), yix = new Map(), cells = []
+    rows.forEach(function (r) {
+      const x = String(r[a1.label] != null ? r[a1.label] : ''), y = String(r[a2.label] != null ? r[a2.label] : ''), v = Number(r[metric.alias])
+      if (!xix.has(x)) { xix.set(x, xs.length); xs.push(x) }
+      if (!yix.has(y)) { yix.set(y, ys.length); ys.push(y) }
+      cells.push([xix.get(x), yix.get(y), Number.isFinite(v) ? v : 0])
+    })
+    let vmin = Infinity, vmax = -Infinity
+    cells.forEach(function (c) { if (c[2] < vmin) vmin = c[2]; if (c[2] > vmax) vmax = c[2] })
+    if (!Number.isFinite(vmin)) { vmin = 0; vmax = 1 }
+    const data = cells.map(function (c) { return { value: c, itemStyle: { color: heatColor(c[2], vmin, vmax) } } })
+    return { type: 'heatmap', title: chart.title, xAxis: { type: 'category', data: xs, axisLabel: { rotate: 30, interval: 0 } }, yAxis: { type: 'category', data: ys }, visualMap: { min: Math.round(vmin * 100) / 100, max: Math.round(vmax * 100) / 100, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: HEAT_RAMP } }, series: [{ type: 'heatmap', name: metric.alias, data: data, label: { show: false }, emphasis: { itemStyle: { shadowBlur: 8, shadowColor: 'rgba(0,0,0,0.3)' } } }] }
+  }
+  // funnel/gauge 等无坐标系独立布局图型：当前 client 的 toEcharts 仅在 option.type === 'pie' 时走
+  // 「独立 series 直通」通道；直角坐标通道会强注 dataZoom，对无坐标轴的 series 直接抛
+  // r.getAxesOnZeroOf（echarts 5.5 实测）。故内层路由标记写 'pie'——仅路由用，
+  // series.type 仍是 funnel/gauge，外层 chart.type/卡片/围栏渲染都不受影响。
+  if (chart.type === 'funnel') return { type: 'pie', title: chart.title, series: [{ type: 'funnel', name: metric ? metric.alias : '', left: '12%', width: '76%', top: 36, bottom: 16, sort: 'descending', gap: 2, label: { show: true, position: 'inside' }, data: rows.map((r, i) => ({ name: names[i], value: vals[i] })) }] }
+  if (chart.type === 'gauge') {
+    let gmax = 0; vals.forEach(function (v) { if (Number.isFinite(v) && v > gmax) gmax = v }); if (!(gmax > 0)) gmax = 100
+    return { type: 'pie', title: chart.title, series: [{ type: 'gauge', name: metric ? metric.alias : '', min: 0, max: gmax, splitNumber: 5, progress: { show: true, width: 14 }, axisLine: { lineStyle: { width: 14 } }, detail: { formatter: '{value}' }, data: rows.slice(0, 1).map((r, i) => ({ name: names[i], value: vals[i] })) }] }
+  }
+  // 通用直角坐标：bar/line 原样；area=折线+areaStyle；scatter=类目位上的散点；
+  // radar → 折线回退（当前 client 的 toEcharts 只透传 xAxis/yAxis/series，radar 组件会被丢弃）
+  const t = chart.type
+  const sType = (t === 'area' || t === 'radar') ? 'line' : t
+  // 键序保持旧版 {type, data, name}，存量看板序列化结果逐字节不变
+  const series = { type: sType, data: t === 'scatter' ? rows.map((r, i) => [names[i], vals[i]]) : vals, name: metric ? metric.alias : '' }
+  if (t === 'area') series.areaStyle = { opacity: 0.3 }
+  return { type: t, title: chart.title, xAxis: { type: 'category', data: names, axisLabel: { rotate: 30, interval: 0 } }, yAxis: { type: 'value' }, series: [series] }
+}
+// 取数列展开：纯列名原样；表达式取其引用的列标识符（语法错误留给 validateChartDef 统一报错）
+function addColumnRefs(s, ref) {
+  let expr = null
+  if (typeof ref === 'string') { if (EXPR_IDENT.test(ref)) { s.add(ref); return } expr = ref }
+  else if (ref && typeof ref === 'object' && typeof ref.expr === 'string') expr = ref.expr
+  else return
+  try { exprCols(parseExpr(expr)).forEach(function (c) { s.add(c) }) } catch (e) {}
+}
+function neededColumns(chart) { const s = new Set(); (chart.group_by || []).forEach(c => addColumnRefs(s, c)); (chart.metrics || []).forEach(m => { if (m && m.column) addColumnRefs(s, m.column) }); (chart.filters || []).forEach(f => f.column && s.add(f.column)); const tc = chart.time_column || (chart.granularity === 'month' ? 'order_date' : null); if (tc) s.add(tc); return Array.from(s) }
+// 表列元数据缓存（GET /api/meta/table/{t} → Set<列名>；失败返回 null 不缓存，join 走降级路径）
+const tableColsCache = new Map()
+async function tableColumnNames(ctx, table) {
+  if (tableColsCache.has(table)) return tableColsCache.get(table)
+  let set = null
+  try {
+    const meta = await getJson(ctx, 'GET', '/api/meta/table/' + encodeURIComponent(table), undefined, 8000)
+    if (meta && Array.isArray(meta.columns)) set = new Set(meta.columns.map(function (c) { return c && c.name }).filter(Boolean))
+  } catch (e) { set = null }
+  if (set) { if (tableColsCache.size > 100) tableColsCache.clear(); tableColsCache.set(table, set) }
+  return set
+}
+async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'text') return { type: 'text', title: chart.title || '', text: chart.text || '' };
+  // ===== 跨表关联（feat-20260920-chart-schema）：Host 端分别取数、按行合并，data-service 单表 /api/query 不动 =====
+  // meta 可用时裁列：事实查询只取事实列（含 join 键），维表查询取被引用的维表列+关联键；
+  // 维表列上的筛选合并后走 JS 执行（服务端筛选无法正确剔除“未命中维表”的事实行）。
+  // meta 不可用则降级：维持旧列裁剪 + 维表整表取回合并。
+  const payload = { table: chart.table, filters: (chart.filters || []).concat(extraFilters || []), limit: 200000 }
+  const cols = neededColumns(chart)
+  let joinDimCols = null, joinDimFilters = []
+  if (chart.join) {
+    const lk = chart.join.left_key, rk = chart.join.right_key
+    const mainSet = await tableColumnNames(ctx, chart.table)
+    const dimSet = await tableColumnNames(ctx, chart.join.table)
+    if (mainSet && dimSet) {
+      const need = cols.slice()
+      if (need.indexOf(lk) < 0) need.push(lk)
+      const factCols = [], refDim = []
+      need.forEach(function (c) {
+        if (mainSet.has(c)) factCols.push(c)
+        else if (dimSet.has(c)) { if (refDim.indexOf(c) < 0) refDim.push(c) }
+        else throw new Error('图表定义引用未知列 "' + c + '"（主表 ' + chart.table + ' 与关联表 ' + chart.join.table + ' 均无此列）')
+      })
+      const splitMain = [], splitDim = []
+      payload.filters.forEach(function (f) { if (f && f.column && !mainSet.has(f.column)) { if (refDim.indexOf(f.column) < 0) refDim.push(f.column); splitDim.push(f) } else splitMain.push(f) })
+      payload.columns = factCols; payload.filters = splitMain
+      joinDimFilters = splitDim
+      joinDimCols = [rk].concat(refDim.filter(function (c) { return c !== rk }))
+    } else if (cols.length) payload.columns = cols
+  } else if (cols.length) payload.columns = cols
+  const data = await getJson(ctx, 'POST', '/api/query', payload); let rows = data.rows || []
+  if (chart.join) {
+    const dp = { table: chart.join.table, limit: 200000 }
+    if (joinDimCols) dp.columns = joinDimCols
+    const dimData = await getJson(ctx, 'POST', '/api/query', dp)
+    rows = mergeJoinRows(rows, dimData.rows || [], chart.join.left_key, chart.join.right_key)
+    if (joinDimFilters.length) rows = applyJsFilters(rows, joinDimFilters)
+  }
   if (chart.granularity === 'month') {
     // 审计 C13：月度聚合按图表 time_column 分组（缺省 order_date），不再硬编码 r.order_date
     const tc = chart.time_column || 'order_date'
     const mdefs = chart.metrics || []
+    const macc = mdefs.map(metricAccessor)
+    const keys = evalKeysIfExpr(chart, rows)
     const daily = {}
     rows.forEach(function (r) {
       const d = r[tc] ? String(r[tc]).slice(0, 10) : ''
       if (!d) return
       if (!daily[d]) { daily[d] = {}; mdefs.forEach(function (mm) { daily[d][mm.alias] = 0 }) }
-      mdefs.forEach(function (mm) {
+      mdefs.forEach(function (mm, mi) {
         if (mm.agg === 'count') daily[d][mm.alias] += 1
-        else { const v = Number(r[mm.column]); if (Number.isFinite(v)) daily[d][mm.alias] += v }
+        else { const v = Number(macc[mi].plain ? r[macc[mi].column] : macc[mi].num(r, keys)); if (Number.isFinite(v)) daily[d][mm.alias] += v }
       })
     })
     const mb = {}
@@ -242,9 +360,15 @@ async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'te
       if (!mb[k]) { mb[k] = {}; mdefs.forEach(function (mm) { mb[k][mm.alias] = 0 }) }
       mdefs.forEach(function (mm) { mb[k][mm.alias] += daily[d][mm.alias] })
     })
-    const gk = (chart.group_by && chart.group_by[0]) || 'order_date'
+    // 分组列名走 label（纯列名时即列名本身，表达式时为其 {expr,as} 别名/原文），与 buildOption 取键一致
+    const gk = (chart.group_by && chart.group_by.length) ? colAccessor(chart.group_by[0]).label : 'order_date'
     const rowsM = Object.keys(mb).sort().map(function (k) { const o = {}; o[gk] = k; mdefs.forEach(function (mm) { o[mm.alias] = Math.round(mb[k][mm.alias] * 100) / 100 }); return o })
     return { type: chart.type, title: chart.title || '', option: buildOption(chart, rowsM), rows: rowsM }
+  }
+  // 表格明细（无分组）：表达式指标按 alias 落为明细新列；纯列名定义行为与旧实现一致（不做额外计算）
+  if (chart.type === 'table' && !(chart.group_by && chart.group_by.length)) {
+    const macc = (chart.metrics || []).map(metricAccessor).filter(function (a) { return !a.plain })
+    if (macc.length && rows.length) { const keys = Object.keys(rows[0]); rows.forEach(function (r) { macc.forEach(function (a) { const v = Number(a.num(r, keys)); r[a.alias] = Number.isFinite(v) ? v : null }) }) }
   }
   let agg = rows; if (chart.type !== 'table' || (chart.group_by && chart.group_by.length)) agg = aggregate(rows, chart); return { type: chart.type, title: chart.title || '', option: buildOption(chart, agg), rows: agg } }
 // ===== 图表定义校验（审计 C12）=====
@@ -253,9 +377,13 @@ async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'te
 // time_column 纳入定义，供月粒度聚合与取数列使用（缺省 order_date）。
 const filterItem = { type: 'object', additionalProperties: false, properties: { column: { type: 'string', required: true }, op: { type: 'string', required: true, enum: ['=', '!=', '>', '>=', '<', '<=', 'IN', 'NOT_IN', 'LIKE', 'ILIKE', 'BETWEEN', 'IS_NULL', 'IS_NOT_NULL'] }, value: { type: 'json' } } }
 const metricItem = { type: 'object', additionalProperties: false, properties: { column: { type: 'string', required: true }, agg: { type: 'string', required: true, enum: ['sum', 'count', 'avg', 'min', 'max'] }, alias: { type: 'string', required: true } } }
-const chartDef = { type: 'object', additionalProperties: false, properties: { type: { type: 'string', required: true, enum: ['bar', 'line', 'pie', 'table', 'text', 'kpi'] }, title: { type: 'string', required: true }, table: { type: 'string', required: true }, filters: { type: 'array', items: filterItem }, group_by: { type: 'array', items: { type: 'string' } }, metrics: { type: 'array', items: metricItem }, sort: { type: 'object', additionalProperties: false, properties: { by: { type: 'string' }, desc: { type: 'boolean' } } }, limit: { type: 'integer' }, text: { type: 'string' }, granularity: { type: 'string', enum: ['day', 'month'] }, time_column: { type: 'string' } } }
-const CHART_TYPES = ['bar', 'line', 'pie', 'table', 'text', 'kpi']
-const CHART_KEYS = ['type', 'title', 'table', 'filters', 'group_by', 'metrics', 'sort', 'limit', 'text', 'granularity', 'time_column']
+// join：图表跨表关联（Host 端合并）。column 允许写表达式字符串（见 validateChartDef）。
+const joinItem = { type: 'object', additionalProperties: false, properties: { table: { type: 'string', required: true }, left_key: { type: 'string', required: true }, right_key: { type: 'string', required: true } } }
+// group_by 项：列名字符串 / 表达式字符串 / {expr, as} 对象，DSL 用 json 放行、JS 侧校验。
+// type 枚举扩展常见 ECharts 图型；heatmap 要求恰好 2 个 group_by；radar 当前按折线渲染。
+const chartDef = { type: 'object', additionalProperties: false, properties: { type: { type: 'string', required: true, enum: ['bar', 'line', 'area', 'pie', 'scatter', 'heatmap', 'radar', 'funnel', 'gauge', 'table', 'text', 'kpi'] }, title: { type: 'string', required: true }, table: { type: 'string', required: true }, join: joinItem, filters: { type: 'array', items: filterItem }, group_by: { type: 'array', items: { type: 'json' } }, metrics: { type: 'array', items: metricItem }, sort: { type: 'object', additionalProperties: false, properties: { by: { type: 'string' }, desc: { type: 'boolean' } } }, limit: { type: 'integer' }, text: { type: 'string' }, granularity: { type: 'string', enum: ['day', 'month'] }, time_column: { type: 'string' } } }
+const CHART_TYPES = ['bar', 'line', 'area', 'pie', 'scatter', 'heatmap', 'radar', 'funnel', 'gauge', 'table', 'text', 'kpi']
+const CHART_KEYS = ['type', 'title', 'table', 'join', 'filters', 'group_by', 'metrics', 'sort', 'limit', 'text', 'granularity', 'time_column']
 // JS 侧执行同一套约束并输出人类/模型可读的中文错误；text 图不取数，豁免 table/metrics。
 function validateChartDef(def, tag) {
   const errs = []
@@ -283,7 +411,39 @@ function validateChartDef(def, tag) {
     if (Array.isArray(def.filters)) def.filters.forEach(function (f, i) {
       if (!f || typeof f !== 'object' || !f.column || !f.op) errs.push(tag + ': filters[' + i + '] 必须含 column/op')
     })
-    if (def.group_by !== undefined && (!Array.isArray(def.group_by) || def.group_by.some(function (g) { return typeof g !== 'string' || !g }))) errs.push(tag + ': group_by 必须是非空列名字符串数组')
+    // group_by：列名字符串 / 表达式字符串 / {expr, as} 对象；非纯列名的字符串在定义期先试编译，语法错误早报
+    if (def.group_by !== undefined && !Array.isArray(def.group_by)) errs.push(tag + ': group_by 必须是数组')
+    else if (Array.isArray(def.group_by)) def.group_by.forEach(function (g, i) {
+      const t2 = tag + ': group_by[' + i + ']'
+      if (typeof g === 'string') {
+        if (!g) { errs.push(t2 + ' 不能为空'); return }
+        if (!EXPR_IDENT.test(g)) { try { parseExpr(g) } catch (e) { errs.push(t2 + ' 既不是列名也不是合法表达式（' + e.message + '）') } }
+      } else if (g && typeof g === 'object' && typeof g.expr === 'string') {
+        if (!g.expr) { errs.push(t2 + '.expr 不能为空'); return }
+        try { parseExpr(g.expr) } catch (e) { errs.push(t2 + '.expr 不是合法表达式（' + e.message + '）') }
+        if (g.as !== undefined && typeof g.as !== 'string') errs.push(t2 + '.as 必须是字符串')
+      } else errs.push(t2 + ' 必须是列名字符串或 {expr, as} 表达式对象')
+    })
+    // 指标列同样允许表达式字符串（alias 即结果列名），定义期试编译
+    if (Array.isArray(def.metrics)) def.metrics.forEach(function (m, i) {
+      if (m && typeof m.column === 'string' && m.column && !EXPR_IDENT.test(m.column)) {
+        try { parseExpr(m.column) } catch (e) { errs.push(tag + ': metrics[' + i + '].column 既不是列名也不是合法表达式（' + e.message + '）') }
+      }
+    })
+    if (def.type === 'heatmap') {
+      if (!Array.isArray(def.group_by) || def.group_by.length !== 2) errs.push(tag + ': heatmap 需要恰好 2 个 group_by 维度（第一维=X 轴，第二维=Y 轴）')
+      if (def.granularity) errs.push(tag + ': heatmap 不支持 granularity（月度粒度会丢失第二维）')
+    }
+    if (def.join !== undefined) {
+      const j = def.join
+      if (!j || typeof j !== 'object' || Array.isArray(j)) errs.push(tag + ': join 必须是对象 {table, left_key, right_key}')
+      else {
+        Object.keys(j).forEach(function (k) { if (['table', 'left_key', 'right_key'].indexOf(k) < 0) errs.push(tag + ': join 含未知字段 "' + k + '"') })
+        if (!j.table || !String(j.table).trim()) errs.push(tag + ': join.table 必填（关联维表名）')
+        if (!j.left_key || !String(j.left_key).trim()) errs.push(tag + ': join.left_key 必填（主表关联列）')
+        if (!j.right_key || !String(j.right_key).trim()) errs.push(tag + ': join.right_key 必填（维表关联列）')
+      }
+    }
   }
   return errs
 }
@@ -292,6 +452,8 @@ function assertChartDefs(defs, prefix) {
   ;(defs || []).forEach(function (d, i) { const t = prefix + (i) + (d && d.title ? '「' + d.title + '」' : ''); validateChartDef(d, t).forEach(function (m) { if (all.indexOf(m) < 0) all.push(m) }) })
   if (all.length) throw new Error('图表定义校验失败：\n- ' + all.join('\n- '))
 }
+// 筛选列候选只收纯列名（表达式/{expr,as} 对象不能作服务器端筛选列），join 维表纯列名可经 JS 过滤生效
+function plainFilterCols(cd) { const cols = []; (cd.group_by || []).forEach(function (g2) { if (typeof g2 === 'string' && EXPR_IDENT.test(g2) && cols.indexOf(g2) < 0) cols.push(g2) }); (cd.metrics || []).forEach(function (m2) { if (m2 && typeof m2.column === 'string' && EXPR_IDENT.test(m2.column) && cols.indexOf(m2.column) < 0) cols.push(m2.column) }); return cols.slice(0, 8) }
 // ===== Store 层（审计 C1-C3）=====
 // 单一 async 写队列：所有落盘经 queueStoreWrite 串行，杜绝并发 writeText 交叠出半截文件；
 // 真正写盘用 temp 文件 + rename 原子替换（rename 同分区原子）。写错误抛给 RPC 调用方，不再吞掉。
@@ -396,8 +558,8 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     ;['vendorFile', 'storeFile', 'crawlConfigFile'].forEach(function (k) { if (CFG[k] && CFG[k].charAt(0) !== '/' && CFG[k].indexOf('://') < 0) CFG[k] = PERSIST_DIR + '/' + CFG[k] })
   })()
   const ws = ctx.get('webServer'); const fsv = ctx.get('fs'); const biApi = {}; if (ws && fsv) ctx.effect(() => ws.register({ kind: 'exact', path: ECHARTS_ROUTE, handler: async (req, res) => { try { await cfgReady; const t = await fsv.resolve(CFG.vendorFile); const buf = await fsv.readBytes(t, undefined, 4 * 1024 * 1024); res.setHeader('Content-Type', 'application/javascript'); res.setHeader('Cache-Control', 'public, max-age=3600'); res.writeHead(200); res.end(buf) } catch (e) { try { res.writeHead(404); res.end('not found') } catch (e2) {} } },}))
-  ctx.systemPrompt.section({ name: 'unmanned-store:dashboard-schema', order: 160, text: '【看板 Dashboard 生成】\n1. 调用 render_dashboard 生成看板（传入结构化 schema，顶层含 title/description/charts；销售必须 filters order_status=1；趋势图加时间过滤；字段来自 get_meta）。月度汇总柱状图可在图表定义里加 granularity:"month"，并用 time_column 指定日期列（缺省 order_date，Host 会按日聚合后合并为月）。每个图表 metrics 只允许 1 个指标（{column, agg, alias}），多指标需拆成多个图表；图表必须写 table。\n2. 生成后，工具结果会给出本次预览ID（previewId）。用一句话总结看板要点，并在回复【最后】追加 dsh-ui 围栏，ID 必须使用本次返回的 previewId（每个看板一个独立ID，互不覆盖）：\n```\ndsh-ui\n{"kind":"dashboard","id":"<previewId>"}\n```\n3. 然后询问用户是否保存到「我的看板」，确认后调用 save_dashboard 工具。也可以让用户直接点预览卡片里每个图表旁的「保存」按钮单独保存。' })
-  const renderTool = defineTool({ name: 'render_dashboard', description: '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。', parameters: { schema: { type: 'object', required: true, additionalProperties: true, properties: { title: { type: 'string' }, description: { type: 'string' }, charts: { type: 'array', items: chartDef } } } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已生成看板「' + (v.title || '') + '」，含 ' + (v.chartCount || 0) + ' 个图表。本次预览ID: ' + (v.previewId || '') + ' —— 回复末尾的 dsh-ui 围栏必须写成 {"kind":"dashboard","id":"' + (v.previewId || '') + '"}（用上面的预览ID）。候选筛选字段: ' + ((v.filterCandidates || []).join('、') || '（无维度字段）') + ' —— 请向用户确认要用作筛选的字段；用户确认后调用 save_dashboard 时通过 filter_fields 参数传入（数组，未确认则不传）。' }] }, async execute(args, exec) { const schema = args.schema || {}; assertChartDefs(schema.charts, 'charts['); let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; schemaSet(sessionId, schema); LAST_SCHEMA = { title: schema.title || '', description: schema.description || '', schema: schema };
+  ctx.systemPrompt.section({ name: 'unmanned-store:dashboard-schema', order: 160, text: '【看板 Dashboard 生成】\n1. 调用 render_dashboard 生成看板（传入结构化 schema，顶层含 title/description/charts；销售必须 filters order_status=1；趋势图加时间过滤；字段来自 get_meta）。月度汇总柱状图可在图表定义里加 granularity:"month"，并用 time_column 指定日期列（缺省 order_date，Host 会按日聚合后合并为月）。每个图表 metrics 只允许 1 个指标（{column, agg, alias}），多指标需拆成多个图表；图表必须写 table。\n【进阶能力】图表类型支持 bar/line/area(面积图)/pie/scatter/heatmap/radar/funnel/gauge/table/text/kpi；heatmap 需恰好 2 个 group_by（第一维=X 轴、第二维=Y 轴）+1 指标；radar 当前按折线渲染。跨表关联：图表可加 join: {table:"维表", left_key:"主表列", right_key:"维表关联列"}，Host 分别取两表后按行合并，维表字段可直接用于 group_by/metrics/filters（如主表含 cate_code 时 join category_dim 后即可按 big_category 分组）。计算字段：group_by 项与 metrics.column 可写表达式字符串（如 "product_price * product_qty"、"pay_amount / product_qty"、"month(order_date)"）或 {expr:"...", as:"别名"}；支持 + - * / % ^、( )、==/!=/<>、> >= < <=、and/or/not、a?b:c、null/true/false 字面量，函数 abs/round/floor/ceil/sqrt/pow/exp/ln/log/log10/min/max/coalesce/if/year/month/quarter/day/weekday(0=周日)/length/concat/upper/lower；纯列名照旧直接取值。\n2. 生成后，工具结果会给出本次预览ID（previewId）。用一句话总结看板要点，并在回复【最后】追加 dsh-ui 围栏，ID 必须使用本次返回的 previewId（每个看板一个独立ID，互不覆盖）：\n```\ndsh-ui\n{"kind":"dashboard","id":"<previewId>"}\n```\n3. 然后询问用户是否保存到「我的看板」，确认后调用 save_dashboard 工具。也可以让用户直接点预览卡片里每个图表旁的「保存」按钮单独保存。' })
+  const renderTool = defineTool({ name: 'render_dashboard', description: '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。图表类型含 bar/line/area/pie/scatter/heatmap(双维)/radar/funnel/gauge/table/text/kpi；支持 join 跨表关联与 group_by/metrics 表达式计算字段。', parameters: { schema: { type: 'object', required: true, additionalProperties: true, properties: { title: { type: 'string' }, description: { type: 'string' }, charts: { type: 'array', items: chartDef } } } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已生成看板「' + (v.title || '') + '」，含 ' + (v.chartCount || 0) + ' 个图表。本次预览ID: ' + (v.previewId || '') + ' —— 回复末尾的 dsh-ui 围栏必须写成 {"kind":"dashboard","id":"' + (v.previewId || '') + '"}（用上面的预览ID）。候选筛选字段: ' + ((v.filterCandidates || []).join('、') || '（无维度字段）') + ' —— 请向用户确认要用作筛选的字段；用户确认后调用 save_dashboard 时通过 filter_fields 参数传入（数组，未确认则不传）。' }] }, async execute(args, exec) { const schema = args.schema || {}; assertChartDefs(schema.charts, 'charts['); let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; schemaSet(sessionId, schema); LAST_SCHEMA = { title: schema.title || '', description: schema.description || '', schema: schema };
         const pid = 'pv' + Date.now() + Math.random().toString(36).slice(2, 6)
         // 预览持久化失败不再静默吞掉：store 读/写错误直接抛给调用方（审计 C1 写错误传播）
         const st0 = await readStore(); st0.previews = st0.previews || {}
@@ -410,7 +572,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
         entries.forEach(function (en, i) { if (i < PREVIEW_MAX && (nowMs - en.at) <= ttlMs) keep[en.k] = st0.previews[en.k] })
         st0.previews = keep
         await queueStoreWrite()
-        const filterCandidates = []; (schema.charts || []).forEach(function (c) { (c.group_by || []).forEach(function (g) { if (g && filterCandidates.indexOf(g) < 0) filterCandidates.push(g) }) })
+        const filterCandidates = []; (schema.charts || []).forEach(function (c) { (c.group_by || []).forEach(function (g) { if (typeof g === 'string' && EXPR_IDENT.test(g) && filterCandidates.indexOf(g) < 0) filterCandidates.push(g) }) })
         return { title: schema.title || '', chartCount: (schema.charts || []).length, previewId: pid, filterCandidates: filterCandidates } } })
   ctx.tools.register(renderTool)
   const saveTool = defineTool({ name: 'save_dashboard', description: '把最近生成且用户确认的看板保存到「我的看板」，每个图表作为独立项加入「全部」。', parameters: { title: { type: 'string', description: '看板名称，可选' }, filter_fields: { type: 'array', items: { type: 'string' }, description: '用户确认的筛选字段（列名数组，来自生成时的候选筛选字段）' } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已保存 ' + (v.count || 0) + ' 个图表到我的看板。' }] }, async execute(args, exec) { let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; const schema = schemaGet(sessionId); if (!schema || !schema.charts || !schema.charts.length) throw new Error('没有可保存的看板，请先生成看板'); assertChartDefs(schema.charts, 'charts['); const s = await readStore(); const now = new Date().toISOString(); var base = args.title || schema.title || '看板'; (schema.charts || []).forEach(function (c, i) { const ff = Array.isArray(args.filter_fields) ? args.filter_fields.filter(function (f) { return (c.group_by || []).indexOf(f) >= 0 }) : null; if (s.layout_custom) { s.charts.unshift({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId), filterable: ff && ff.length ? ff : undefined }) } else { s.charts.push({ id: String(Date.now()) + '-' + i, title: c.title || (base + ' ' + (i + 1)), type: c.type, chart_def: c, view_ids: [1], created_at: now, session_id: String(sessionId) }) } }); await queueStoreWrite(); return { count: (schema.charts || []).length, saved: true } } })
@@ -498,7 +660,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   biApi['bi.createView'] = async (args) => { const s = await readStore(); if (!args.name || !String(args.name).trim()) return { error: '视图名不能为空' }; const id = Date.now(); s.views.push({ id, name: String(args.name).trim(), created_at: new Date().toISOString() }); await queueStoreWrite(); return { id, name: String(args.name).trim() } }
   biApi['bi.renameView'] = async (args) => { const s = await readStore(); const v = (s.views || []).find(function (x) { return x.id === Number(args.id) }); if (!v) return { error: '视图不存在' }; if (v.id === 1) return { error: '「全部」视图不能重命名' }; v.name = String(args.name || v.name); await queueStoreWrite(); return { id: v.id, name: v.name } }
   biApi['bi.deleteView'] = async (args) => { const s = await readStore(); const v = (s.views || []).find(function (x) { return x.id === Number(args.id) }); if (!v) return { error: '视图不存在' }; if (v.id === 1) return { error: '「全部」视图不能删除' }; s.views = (s.views || []).filter(function (x) { return x.id !== Number(args.id) }); (s.charts || []).forEach(function (c) { if (c.view_ids) c.view_ids = c.view_ids.filter(function (vid) { return vid !== Number(args.id) }) }); await queueStoreWrite(); return { ok: true } }
-  biApi['bi.listCharts'] = async (args) => { const s = await readStore(); const viewId = args && args.viewId ? Number(args.viewId) : 1; const view = (s.views || []).find(function (v) { return v.id === viewId }); return { filters: (view && view.filters) || [], free_layout: viewId === 1 ? false : !!(view && view.free_layout), chart_pos: (view && view.chart_pos) || {}, layout_locked: !!s.layout_locked, charts: (s.charts || []).filter(function (c) { return viewId === 1 || (c.view_ids || []).indexOf(viewId) >= 0 }).slice().sort(function (a, b) { return s.layout_custom ? 0 : (b.created_at || '').localeCompare(a.created_at || '') }).map(function (c) { const defL = c.type === 'kpi' ? { w: 3, h: 1 } : { w: 6, h: 2 }; return { id: c.id, title: c.title, type: c.type, created_at: c.created_at, view_ids: c.view_ids || [1], session_id: c.session_id || '', table: c.chart_def ? c.chart_def.table : undefined, filterable: ((c.filterable && c.filterable.length) ? c.filterable : (function () { const cd = c.chart_def || {}; const cols = []; (cd.group_by || []).forEach(function (g2) { if (g2 && cols.indexOf(g2) < 0) cols.push(g2) }); (cd.metrics || []).forEach(function (m2) { if (m2 && m2.column && cols.indexOf(m2.column) < 0) cols.push(m2.column) }); return cols.slice(0, 8) })()).map(function (f) { return { column: f, label: NAME_MAP_ZH.fields[f] || f } }), user_filter: c.user_filter || null, layout: c.layout || defL, layout_locked: !!c.layout_locked, locked: ((view && view.chart_locks) || {})[c.id] } }) } }
+  biApi['bi.listCharts'] = async (args) => { const s = await readStore(); const viewId = args && args.viewId ? Number(args.viewId) : 1; const view = (s.views || []).find(function (v) { return v.id === viewId }); return { filters: (view && view.filters) || [], free_layout: viewId === 1 ? false : !!(view && view.free_layout), chart_pos: (view && view.chart_pos) || {}, layout_locked: !!s.layout_locked, charts: (s.charts || []).filter(function (c) { return viewId === 1 || (c.view_ids || []).indexOf(viewId) >= 0 }).slice().sort(function (a, b) { return s.layout_custom ? 0 : (b.created_at || '').localeCompare(a.created_at || '') }).map(function (c) { const defL = c.type === 'kpi' ? { w: 3, h: 1 } : { w: 6, h: 2 }; return { id: c.id, title: c.title, type: c.type, created_at: c.created_at, view_ids: c.view_ids || [1], session_id: c.session_id || '', table: c.chart_def ? c.chart_def.table : undefined, filterable: ((c.filterable && c.filterable.length) ? c.filterable : plainFilterCols(c.chart_def || {})).map(function (f) { return { column: f, label: NAME_MAP_ZH.fields[f] || f } }), user_filter: c.user_filter || null, layout: c.layout || defL, layout_locked: !!c.layout_locked, locked: ((view && view.chart_locks) || {})[c.id] } }) } }
   biApi['bi.setChartFilter'] = async (args) => {
     const s = await readStore()
     const c = (s.charts || []).find(function (x) { return x.id === String(args && args.id) })
@@ -555,7 +717,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     if (uf && uf.column) { const uv = String(uf.value === undefined || uf.value === null ? '' : uf.value); const uop = uv.startsWith('\u0000!') ? '!=' : (uf.op || '='); extras.push({ column: uf.column, op: uop, value: uop === '!=' ? uv.slice(2) : uf.value }) }
     const exs = (args && args.extras) || (args && args.extra ? [args.extra] : [])
     exs.forEach(function (e) { if (!e || !e.column) return; const ev = String(e.value === undefined || e.value === null ? '' : e.value); const eop = ev.startsWith('\u0000!') ? '!=' : (e.op || '='); extras.push({ column: e.column, op: eop, value: eop === '!=' ? ev.slice(2) : e.value }) }); const rendered = await renderChartDef(ctx, c.chart_def, extras); rendered.id = c.id; rendered.user_filter = c.user_filter || null
-    rendered.filterable = (c.filterable && c.filterable.length) ? c.filterable : (function () { const cd = c.chart_def || {}; const cols = []; (cd.group_by || []).forEach(function (g2) { if (g2 && cols.indexOf(g2) < 0) cols.push(g2) }); (cd.metrics || []).forEach(function (m2) { if (m2 && m2.column && cols.indexOf(m2.column) < 0) cols.push(m2.column) }); return cols.slice(0, 8) })().map(function (f) { return { column: f, label: NAME_MAP_ZH.fields[f] || f } })
+    rendered.filterable = (c.filterable && c.filterable.length) ? c.filterable : plainFilterCols(c.chart_def || {}).map(function (f) { return { column: f, label: NAME_MAP_ZH.fields[f] || f } })
     rendered.table = c.chart_def ? c.chart_def.table : undefined
     return rendered }
   biApi['bi.deleteChart'] = async (args) => { const s = await readStore(); const id = String(args.id); const viewId = Number(args.viewId || 1); const c = (s.charts || []).find(function (x) { return x.id === id }); if (!c) return { error: 'not found' }; if (viewId === 1) { s.charts = (s.charts || []).filter(function (x) { return x.id !== id }) } else { if (c.view_ids) c.view_ids = c.view_ids.filter(function (v) { return v !== viewId }) }; await queueStoreWrite(); return { ok: true } }
@@ -606,7 +768,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   ctx.tools.register(queryTool)
   const modifyTool = defineTool({
     name: 'modify_chart',
-    description: '修改「我的看板」中已保存图表的定义（指标/维度/时间范围/图表类型等）。',
+    description: '修改「我的看板」中已保存图表的定义（指标/维度/时间范围/图表类型/join 跨表关联/表达式计算字段等）。',
     parameters: { id: { type: 'string', required: true, description: '要修改的图表 id' }, chart_def: chartDef },
     output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已修改图表「' + (v.title || '') + '」(' + (v.type || '') + ')。' }] },
     async execute(args, exec) {
@@ -869,3 +1031,5 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     }
   } }))
 } }
+// 自检/回归钩子：仅具名导出纯函数，插件加载走 default，不影响运行时行为
+export { aggregate, buildOption, neededColumns, validateChartDef, heatColor, renderChartDef }
