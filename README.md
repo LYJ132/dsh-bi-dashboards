@@ -39,6 +39,12 @@ DSH profile 级全局静态插件：提供「我的看板」视图标签、看�
 | `web/` | 状态服务器（:8080 status.json + 手动同步通道），crawler 容器写入状态 | SyncBar 状态源 |
 | `sql/` | PG DDL/迁移（bi_plugin schema 约定） | L1/L2 场景 |
 
+## 发布与部署链（源码 → lib → 离线包 → 宿主机）
+
+- `src/` 经 `pnpm build`（esbuild）打包成零外部依赖的 `lib/index.js`；`package.json` 的 `files`（lib、static、cordis.patch.yml 等）定义 `dsh plugin add` 安装到 `~/.dsh/profiles/web/node_modules/` 的内容。
+- **离线更新包**：每次发布（`chore(release): vX.Y.Z`）后必须运行 `bash scripts/make-offline-package.sh` 刷新 `dist/bi-dashboards-offline-<version>-<shortsha>.tar.gz`（`dist/` 不入库），供无网络宿主机按 `OFFLINE-UPDATE.md` 手动替换。v1.1.7 发布时曾遗漏此步，导致 dist 停留在 1.1.6 包——现已固化为脚本 + 本条约定。
+- git 安装的宿主机走 `/bi-update`（pull + 重建 lib），不依赖 dist 离线包。
+
 ## 模式边界
 
 - **图表模式**（对话默认）：只做看板操作，**禁止修改本目录任何插件文件**；规范见 `rules/CHART.md`

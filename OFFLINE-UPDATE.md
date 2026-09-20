@@ -1,5 +1,16 @@
 # 离线更新包使用说明
 
+> **维护者必读（发布流程的一部分）**：离线更新包**不是手工拼装**的，由仓库脚本一键生成：
+>
+> ```bash
+> bash scripts/make-offline-package.sh        # 重建 lib/（esbuild）并打包
+> bash scripts/make-offline-package.sh --no-build
+> ```
+>
+> 产物为 `dist/bi-dashboards-offline-<version>-<shortsha>.tar.gz`（`dist/` 不入库）。
+> 每次执行 `chore(release): vX.Y.Z` 提交后**必须紧接着运行该脚本**刷新离线包，
+> 否则离线机器会停留在旧版（v1.1.6 → v1.1.7 发布时曾遗漏，dist 中 1.1.6 包未更新，事后于本机制补齐）。
+
 本包用于在**完全无网络**的数据宿主机上离线更新 dsh-bi-dashboards 插件。包内已包含构建产物 `lib/index.js`、`lib/client.js`、`static/`、`cordis.patch.yml`、`package.json`、`scripts/` 与 `INSTALL.md`，无需再执行任何构建或联网操作。
 
 ## 包内容核对
