@@ -65,7 +65,7 @@
    - 派生指标（客单价/单价等列间运算）→ metrics/group_by 写表达式即可，无需预建视图
    - 24x7 时段分布 → heatmap + group_by `["hour(order_create_time)","weekday(order_date)"]`（hour/minute/datediff/date_add 等日期函数可用于 group_by/metrics 表达式）
    - 一图多指标 → bar/line/area ≤4 个 metrics（第 2 条 series 自动挂第二 Y 轴，量纲悬殊组合免视图）、table ≤6 个聚合列、kpi 主值+对比值 ≤2 个；去重计数 `agg:"count_distinct"`（如 成交人数）；按聚合结果过滤（销售额>100 的品类）用 filters `{metric:"<alias>", op, value}`（having，聚合后执行），均无需预建视图
-   - 数值格式化 → metrics 加 `format {unit:"千"|"万", decimals, prefix:"¥"}`（表格单元格与 kpi 数值按缩放+前缀+千分位显示，如 6698990+万/1/¥ → ¥669.9万；原始值不变；柱/线数值轴仍显示原始刻度）
+   - 数值格式化 → metrics 加 `format {unit:"千"|"万", decimals, prefix:"¥"}`（表格单元格与 kpi 数值按缩放+前缀+千分位显示，如 6698990 配 `{unit:"万",decimals:1,prefix:"¥"}` → ¥669.9万；原始值不变；柱/线数值轴仍显示原始刻度）
    - 枚举映射 → 图表加 `value_map {原始值:"显示名"}`（表格分组列与轴/饼图类目名显示层映射，如订单状态 0/1 → 待处理/已处理）
    - kpi 同环比 → kpi 加 `compare {type:"prev_day"|"prev_period"}`（需时间列筛选；metrics 恰 1 个；显示值附「较前一日/较上一周期 ±x.x%」）
    - 表格增强 → `rules [{column, op, value, style:{color,background}}]` 条件格式（注意：当前客户端表格不渲染单元格样式，规则仅透出数据）与 `showTotals:true` 数值列合计行
