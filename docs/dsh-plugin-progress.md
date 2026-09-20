@@ -48,3 +48,34 @@
 - **契约要点**：缺省绑定规则=「筛选列 ∈ neededColumns（group_by/metrics/filters/time_column 及表达式引用列）才应用，否则跳过不报错」；filtersFrom 三形态=子集收窄/未取列放宽/空数组全拒；候选字段=group_by 纯列名 ∧ ∃图可消费；能力事实改数字/枚举只改 bi-capabilities.js 一处，guard 保证其余文本同步
 - **提交**：feature/bi-capability-v2 @ e3eaeaf + harness + docs（本次）
 
+### 12.7 bi-capability-v2 终验 —— 提案交付汇总（acceptance sweep @ master 305c53b）
+
+- **终验环境**：合并后 master lib（305c53b，非 worktree 副本）串行跑全部四套 harness + build/guard，结果逐字如下：
+  - `verify-bicap-r1.mjs`（8610）：`RESULT pass=18 fail=0`；master/feature 双跑 compat capture 字节对拍通过
+  - `verify-bicap-r2.mjs`（8611）：`RESULT pass=34 fail=0`
+  - `verify-bicap-r3.mjs`（8612）：`RESULT pass=35 fail=0`
+  - `verify-bicap-r4.mjs`（8613）：`27 passed, 0 failed`
+  - `npm run build`：`built lib/index.js (bundled, zero external imports)` + `capability contract guard OK (19 fact edges, hand texts: renderTool/cmdPrompt)`
+- **提案覆盖矩阵**（P2-4 排除在外，等用户决策）：
+
+| 提案项 | 交付提交（feature/bi-capability-v2） | 验收状态 |
+|---|---|---|
+| P0-1 一图多指标 + 双 Y 轴（按图型上限） | eb81c1b（docs b659977） | 已验收：R2 harness M1/M2/V1（bar≤4/table≤6/kpi≤2、yAxisIndex=1、alias 唯一） |
+| P0-2 相对时间筛选记号 | 772e669（docs f54b9ae） | 已验收：R1 harness T2（today/today-1/-30d/BETWEEN/{relative}、注入时钟窗口平移、同图 now 快照） |
+| P0-3 链式 join 数组 + join.type | 772e669 + 973641c（docs f54b9ae） | 已验收：R1 harness T3/T4（4 级上限、后级引用前级产出列、left 保留/inner 剔除）；E7 字节对拍 |
+| P0-4 日期时间表达式函数 | 772e669（docs f54b9ae） | 已验收：R1 harness T1（hour×weekday 24x7 heatmap）、函数表进契约（guard 记号覆盖） |
+| P1-1 count_distinct | eb81c1b（docs b659977） | 已验收：R2 harness CD1（组路径去重 + 月路径并集口径）；E8 |
+| P1-2 kpi 同环比 compare | eee64e6（docs bbedfec） | 已验收：R3 harness F3/F3b/F3c（prev_day/prev_period 对齐平移取数、named-field 报错）；E9 探针 |
+| P1-3 having 聚合后筛选 | eb81c1b（docs b659977） | 已验收：R2 harness H1（聚合后执行、不进 payload、与 pre-agg 筛选/limit 叠加） |
+| P1-4 时间成分函数（hour/minute/weekday，与 P0-4 同批交付） | 772e669（docs f54b9ae） | 已验收：同 P0-4 的 R1 T1（提案原文不在仓库，P0-4/P1-4 归属按 12.3 章节口径「P0-4+P1-4」合并交付记录） |
+| P1-5 表格条件格式 rules + showTotals | eee64e6（docs bbedfec） | 已验收：R3 harness F4/F4b（合计行 23/70、cellStyles 数据透出、白名单校验）；E9 明示客户端表格暂不渲染样式 |
+| P2-1 指标格式化 format | eee64e6（docs bbedfec） | 已验收：R3 harness F1 系列（¥669.9万 缩放+前缀+千分位、原始值不变、单位白名单） |
+| P2-2 枚举映射 value_map | eee64e6（docs bbedfec） | 已验收：R3 harness F2（仅显示层映射、原始行/轴数值不变） |
+| P2-3 看板筛选显式绑定 filtersFrom | e3eaeaf（docs f8dcc7c） | 已验收：R4 harness T1-T7（缺省命中/跳过、收窄/放宽/全拒、join 维表列不进未 join 图、候选排除） |
+| P2-5 能力契约单一源 + build guard | e3eaeaf + e44df51（docs f8dcc7c） | 已验收：guard 19 记号、手改数字 build 失败实测；E10 |
+
+- **不可在仓库内验证、如实标注**：用户原始提案的总体验收基线「11 项失败清单 → ≤3」依赖其现场测试的 4 页 FineBI 看板与失败明细（存于用户现场会话记录，不在本仓库），本仓库无法复现该基线数字，故以上矩阵以逐项 harness 检查为可验证替代，**不宣称** 11→≤3 已达成；需用户用真实看板数据回归后方可下结论。
+- **一致性终检**：systemPrompt dashboard-schema 段全句由 describeCapabilities() 生成（guard 保证），与 rules/CHART.md L1/选型/筛选绑定各节、README /bi-create 提逐条核对一致；本次修正两处过时表述——README 进阶选型清单停留在 R0 世代（缺多指标/相对记号/count_distinct/having/同环比/格式化/filtersFrom），CHART.md format 示例「6698990+万/1/¥」写法含混——已修正并提交。
+- **E7-E10 与 ch.12 核对**：四章经验各附当轮 harness/对拍验证记录，与实际交付物（scripts/verify-bicap-r1..r4.mjs、verify-capability-guard.mjs、src/bi-capabilities.js）一一对应，无宣称未落地项。
+- **提交**：feature/bi-capability-v2 @ 337d02f（文档一致性）+ 本条（本次）
+
