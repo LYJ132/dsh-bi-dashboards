@@ -4,7 +4,7 @@ import { existsSync, readFileSync, realpathSync, promises as fsp } from 'node:fs
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 // 表达式求值 / join 合并 / JS 行过滤纯函数层（esbuild 打包时并入 lib/index.js）
-import { EXPR_IDENT, parseExpr, exprCols, colAccessor, metricAccessor, evalKeysIfExpr, mergeJoinRows, normalizeJoins, applyJsFilters, resolveFilters, currentNow, setNowProvider, resolveRelToken, havingFilters, applyHaving } from './bi-expr.js'
+import { EXPR_IDENT, parseExpr, exprCols, colAccessor, metricAccessor, evalKeysIfExpr, mergeJoinRows, normalizeJoins, applyJsFilters, resolveFilters, currentNow, setNowProvider, resolveRelToken, havingFilters, applyHaving, jsFilterMatch } from './bi-expr.js'
 // PKG_DIR 必须走 fileURLToPath：URL.pathname 不做 percent 解码（含空格/中文的路径会 404），
 // Windows 下还会产生盘符前斜杠（/D:/...），readFileSync 直接失败。
 const PKG_DIR = fileURLToPath(new URL('../', import.meta.url)).replace(/[\\/]+$/, '')
@@ -66,7 +66,7 @@ const FALLBACK_REPO_URL = 'github:LYJ132/dsh-bi-dashboards'
 // 快照形态远端最新版探针主通道：Gitee raw 直读 master 分支 package.json（失败时再回退 npm view GitHub 备通道）
 const PKG_JSON_RAW_URL = REPO_URL.replace(/\.git$/, '') + '/raw/master/package.json'
 const UPD_HINT = 'dsh plugin --profile web add ' + REPO_URL + ' 更新'
-const UPD_NATIVE_HINT = '点更新将从 Gitee 拉取最新版，失败自动改用 GitHub 备选'
+const UPD_NATIVE_HINT = '点更新将拉取最新版本'
 let PKG_VERSION = '1.1.0'
 try { PKG_VERSION = String(JSON.parse(readFileSync(PKG_DIR + '/package.json', 'utf8')).version || PKG_VERSION) } catch (e) {}
 async function runCmd(ctx, argv, cwd, timeoutMs) {
@@ -201,7 +201,7 @@ function createBiCreateCommand() {
       try {
         agent.followup({
           role: 'user',
-          content: [{ type: 'text', text: '用户通过 /bi-create 请求生成看板：' + desc + '\n请按看板生成流程处理：先用 get_meta 核对字段（销售口径需 filters order_status=1，趋势图加时间过滤），再调用 render_dashboard 生成预览，回复末尾用 dsh-ui 围栏 {"kind":"dashboard","id":"<本次 previewId>"} 展示，并询问用户是否保存到「我的看板」。进阶选型（按需优先于回退 PG 视图）：二维密度/交叉分布用 type:"heatmap"（恰好 2 个 group_by 维度=XY 轴 + 1 指标）；一个图同时看多个指标直接写多个 metrics（柱/线/面积 ≤4 个，第 2 条 series 自动挂第二 Y 轴；表格 ≤6 列；去重计数用 agg:"count_distinct"）；需要他表维度（如大类）给图表加 join（单对象 {table:"维表", left_key:"主表列", right_key:"维表关联列"}，或多级链式对象数组，后级可引用前级产出列；可选 type:"left"|"inner"，缺省 left）；占比/客单价等派生指标把 metrics.column 写成表达式（如 "pay_amount / product_qty"，group_by 项同样支持，可用 hour/minute/datediff/date_add 等日期函数），字段与图型能力细节以系统提示中的看板 schema 为准；相对时间筛选把 filters[].value 写成记号（"today"=今天、"-30d"=近30天、BETWEEN ["today-29","today"] 等），看板每次打开自动重算时间窗；按聚合结果过滤（如 销售额>100 的品类）用 {metric:"<指标alias>", op, value} 形式的 filters。' }],
+          content: [{ type: 'text', text: '用户通过 /bi-create 请求生成看板：' + desc + '\n请按看板生成流程处理：先用 get_meta 核对字段（销售口径需 filters order_status=1，趋势图加时间过滤），再调用 render_dashboard 生成预览，回复末尾用 dsh-ui 围栏 {"kind":"dashboard","id":"<本次 previewId>"} 展示，并询问用户是否保存到「我的看板」。进阶选型（按需优先于回退 PG 视图）：二维密度/交叉分布用 type:"heatmap"（恰好 2 个 group_by 维度=XY 轴 + 1 指标）；一个图同时看多个指标直接写多个 metrics（柱/线/面积 ≤4 个，第 2 条 series 自动挂第二 Y 轴；表格 ≤6 列；去重计数用 agg:"count_distinct"）；需要他表维度（如大类）给图表加 join（单对象 {table:"维表", left_key:"主表列", right_key:"维表关联列"}，或多级链式对象数组，后级可引用前级产出列；可选 type:"left"|"inner"，缺省 left）；占比/客单价等派生指标把 metrics.column 写成表达式（如 "pay_amount / product_qty"，group_by 项同样支持，可用 hour/minute/datediff/date_add 等日期函数），字段与图型能力细节以系统提示中的看板 schema 为准；相对时间筛选把 filters[].value 写成记号（"today"=今天、"-30d"=近30天、BETWEEN ["today-29","today"] 等），看板每次打开自动重算时间窗；按聚合结果过滤（如 销售额>100 的品类）用 {metric:"<指标alias>", op, value} 形式的 filters。展示增强：指标可加 format {unit:"千"|"万", decimals, prefix:"¥"}、图表可加 value_map 枚举映射、kpi 可加 compare {type:"prev_day"|"prev_period"} 同环比（需时间筛选）、table 可加 rules 条件格式与 showTotals:true 合计行。' }],
           source: { kind: 'user' }
         })
       } catch (e) {
@@ -280,23 +280,118 @@ function heatColor(v, min, max) {
   const c1 = hexToRgb(HEAT_RAMP[i]), c2 = hexToRgb(HEAT_RAMP[i + 1])
   return 'rgb(' + Math.round(c1[0] + (c2[0] - c1[0]) * f) + ',' + Math.round(c1[1] + (c2[1] - c1[1]) * f) + ',' + Math.round(c1[2] + (c2[2] - c1[2]) * f) + ')'
 }
+// ===== 显示层格式化（bi-capability-v2 P2-1/P2-2/P1-5）：纯展示变换，原始聚合值/行数据不动 =====
+// P2-1：metrics[].format {unit:'千'|'万', decimals, prefix:'¥'} —— 千/万缩放 + 前缀 + 小数位 + 千分位
+const UNIT_DIV = { '千': 1000, '万': 10000 }
+function fmtMetricDisplay(v, fmt) {
+  if (v === null || v === undefined || v === '') return ''
+  let n = Number(v)
+  if (!Number.isFinite(n)) return String(v)
+  if (fmt && fmt.unit && UNIT_DIV[fmt.unit]) n = n / UNIT_DIV[fmt.unit]
+  const d = fmt && Number.isInteger(fmt.decimals) ? Math.max(0, Math.min(6, fmt.decimals)) : null
+  let out = d !== null ? n.toFixed(d) : String(Math.round(n * 100) / 100)
+  if (d === null && out.indexOf('.') >= 0) out = out.replace(/0+$/, '').replace(/\.$/, '')
+  const parts = out.split('.')
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  out = parts.join('.')
+  return (fmt && fmt.prefix ? fmt.prefix : '') + out + (fmt && fmt.unit ? fmt.unit : '')
+}
+// P2-2：value_map {原始值: 显示名} 显示层枚举映射（未命中原样返回）
+function mapDisp(v, vm) { if (!vm || v === null || v === undefined) return v; const l = vm[String(v)]; return l === undefined ? v : l }
+// P1-5：表格条件格式/合计行的显示副本构建；无任何新键时返回与旧实现完全一致的对象（rows 原数组透传）
+function buildTableOption(chart, rows) {
+  const tcols = rows.length ? Object.keys(rows[0]) : []
+  const tl = {}; tcols.forEach(function (c2) { tl[c2] = NAME_MAP_ZH.fields[c2] || c2 })
+  const fmts = {}; (chart.metrics || []).forEach(function (m) { if (m && m.format) fmts[m.alias] = m.format })
+  const vm = chart.value_map || null
+  const rules = chart.rules
+  const totals = chart.showTotals === true
+  if (!Object.keys(fmts).length && !vm && !(rules && rules.length) && !totals) return { type: 'table', title: chart.title, columns: tcols, columnLabels: tl, rows }
+  const disp = rows.map(function (r) { const o = {}; tcols.forEach(function (c2) { let v = r[c2]; if (fmts[c2]) v = fmtMetricDisplay(v, fmts[c2]); else v = mapDisp(v, vm); o[c2] = v === undefined ? null : v }); return o })
+  const opt = { type: 'table', title: chart.title, columns: tcols, columnLabels: tl, rows: disp }
+  // 条件格式：对原始行按规则匹配（数值口径），产出与显示行对齐的单元格样式数组。
+  // 探针结论：当前 client 表格渲染 td 仅取 String(value)，不消费样式 —— cellStyles 作为数据透出，
+  // 客户端表格暂不渲染（不做超出能力的宣称，echarts/客户端探测记录见 PLUGIN.md E9）。
+  if (rules && rules.length) opt.cellStyles = rows.map(function (r) { const st = {}; rules.forEach(function (ru) { if (ru && ru.column && ru.style && Object.prototype.hasOwnProperty.call(r, ru.column) && jsFilterMatch(r, { column: ru.column, op: ru.op, value: ru.value })) st[ru.column] = Object.assign({}, st[ru.column], ru.style) }); return st })
+  // 合计行：数值指标列求和（沿用显示格式）；其余列留空，首列标「总计」。仅进显示副本，原始 rows 不变。
+  if (totals && rows.length) { const sum = {}; tcols.forEach(function (c2) { sum[c2] = '' }); sum[tcols[0]] = '总计'; (chart.metrics || []).forEach(function (m) { if (!m || !m.alias) return; const total = rows.reduce(function (a, r) { const n = Number(r[m.alias]); return a + (Number.isFinite(n) ? n : 0) }, 0); sum[m.alias] = fmts[m.alias] ? fmtMetricDisplay(total, fmts[m.alias]) : Math.round(total * 100) / 100 }); disp.push(sum) }
+  return opt
+}
+// ===== 同环比（P1-2）时间窗平移：绝对日期字符串/数组整体平移 N 天（保留时间成分）=====
+const CMP_DAY_MS = 86400000
+function cmpPad2(n) { return (n < 10 ? '0' : '') + n }
+function shiftAbsDateStr(s, days) {
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})(.*)$/.exec(String(s).trim())
+  if (!m) return s
+  const t = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) - days * CMP_DAY_MS)
+  return t.getUTCFullYear() + '-' + cmpPad2(t.getUTCMonth() + 1) + '-' + cmpPad2(t.getUTCDate()) + m[4]
+}
+function shiftAbsDateValues(v, days) {
+  if (Array.isArray(v)) return v.map(function (x) { return shiftAbsDateValues(x, days) })
+  if (typeof v === 'string') return shiftAbsDateStr(v, days)
+  return v
+}
+// prev_period 窗口跨度：取时间列筛选覆盖的 [最早起, 最晚止] 闭区间天数（单日=1）
+function periodSpanDays(timeFilters) {
+  let minT = Infinity, maxT = -Infinity
+  const scan = function (v) {
+    if (Array.isArray(v)) { v.forEach(scan); return }
+    const m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(String(v == null ? '' : v).trim())
+    if (!m) return
+    const t = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+    if (t < minT) minT = t; if (t > maxT) maxT = t
+  }
+  timeFilters.forEach(function (f) { scan(f.value) })
+  if (!Number.isFinite(minT) || !Number.isFinite(maxT)) return 1
+  return Math.max(1, Math.round((maxT - minT) / CMP_DAY_MS) + 1)
+}
+// kpi compare：主值聚合完成后，按平移后的（已解析为绝对时间的）时间筛选重跑同一管线取一次对比值
+async function computeCompare(ctx, chart, resolvedFilters, aggRows) {
+  const timeCol = chart.time_column || 'order_date'
+  const tf = resolvedFilters.filter(function (f) { return f && f.column === timeCol })
+  if (!tf.length) throw new Error('compare 同环比需要图表定义包含时间列筛选（column="' + timeCol + '"，如 BETWEEN ["today-6","today"]）')
+  const days = chart.compare.type === 'prev_day' ? 1 : periodSpanDays(tf)
+  const cmpDef = Object.assign({}, chart, { compare: undefined, filters: resolvedFilters.map(function (f) { return f && f.column === timeCol ? Object.assign({}, f, { value: shiftAbsDateValues(f.value, days) }) : f }) })
+  const r = await renderChartDef(ctx, cmpDef)
+  const metric = (chart.metrics || [])[0]
+  const prev = r.rows.length && metric ? r.rows[0][metric.alias] : null
+  const cur = aggRows.length && metric ? aggRows[0][metric.alias] : null
+  let pct = null
+  if (typeof prev === 'number' && typeof cur === 'number' && prev !== 0) pct = Math.round((cur - prev) / prev * 1000) / 10
+  return { prev: prev, pct: pct, label: chart.compare.type === 'prev_day' ? '较前一日' : '较上一周期' }
+}
 // 表达式感知的 option 构建：分组列名统一走 colAccessor().label（纯列名旧行为不变）
 // bi-capability-v2 P0-1：多指标泛化 —— 直角坐标图型（bar/line/area/scatter/radar 回退折线）
 // 2+ 指标时每个指标一条 series，第 2 条起 yAxisIndex:1 挂第二 Y 轴（通用组合规则，非新图型）；
 // 单指标路径逐字节保持旧输出；kpi 允许主值 + 对比值（P1-2 同环比的落点，本版仅透出数值）。
-function buildOption(chart, rows) {
+// bi-capability-v2 R3：P2-1 format / P2-2 value_map / P1-2 compare —— 全部显示层变换，
+// 未使用新键的旧定义输出逐字节不变（table rows 原数组透传、kpi value 原值）。
+function buildOption(chart, rows, cmp) {
   if (chart.type === 'text') return { type: 'text', title: chart.title, text: chart.text || '' }
   const metrics = chart.metrics || []
   const metric = metrics[0]
   const gbs = chart.group_by || []
-  if (chart.type === 'table') { const tcols = rows.length ? Object.keys(rows[0]) : []; const tl = {}; tcols.forEach(function (c2) { tl[c2] = NAME_MAP_ZH.fields[c2] || c2 }); return { type: 'table', title: chart.title, columns: tcols, columnLabels: tl, rows } }
+  if (chart.type === 'table') return buildTableOption(chart, rows)
   if (chart.type === 'kpi') {
-    const o = { type: 'kpi', title: chart.title, value: rows.length && metric ? rows[0][metric.alias] : null }
+    const fmt0 = metric && metric.format
+    let v = rows.length && metric ? rows[0][metric.alias] : null
+    if (fmt0) v = fmtMetricDisplay(v, fmt0)
+    const o = { type: 'kpi', title: chart.title, value: v }
     if (metrics.length > 1 && rows.length) o.compare = rows[0][metrics[1].alias]
+    else if (cmp && rows.length) {
+      // P1-2：同环比副标签。探针结论：client 仅渲染 option.value 文本（React 与静态 DOM 两路径同），
+      // 故展示上把「较前一日/较上一周期 ±x.x%」并入 value 文本；compare/comparePct/compareLabel 结构化字段同步透出。
+      const pctTxt = cmp.pct === null ? '—' : (cmp.pct > 0 ? '+' + cmp.pct + '%' : cmp.pct + '%')
+      o.compare = fmt0 ? fmtMetricDisplay(cmp.prev, fmt0) : cmp.prev
+      o.compareLabel = cmp.label
+      if (cmp.pct !== null) o.comparePct = cmp.pct
+      o.value = String(o.value) + '（' + cmp.label + ' ' + pctTxt + '）'
+    }
     return o
   }
   const g0 = gbs.length ? colAccessor(gbs[0]) : null
-  const names = rows.map(function (r) { const v = g0 ? r[g0.label] : ''; return String(v != null ? v : '') })
+  const vm = chart.value_map || null
+  const names = rows.map(function (r) { const v = mapDisp(g0 ? r[g0.label] : '', vm); return String(v != null ? v : '') })
   const vals = rows.map(function (r) { return Number(metric ? r[metric.alias] : 0) })
   if (chart.type === 'pie') return { type: 'pie', title: chart.title, series: [{ type: 'pie', radius: ['30%', '65%'], data: rows.map((r, i) => ({ name: names[i], value: vals[i] })) }] }
   if (chart.type === 'heatmap') {
@@ -305,7 +400,7 @@ function buildOption(chart, rows) {
     const a1 = colAccessor(gbs[0]), a2 = colAccessor(gbs[1])
     const xs = [], ys = [], xix = new Map(), yix = new Map(), cells = []
     rows.forEach(function (r) {
-      const x = String(r[a1.label] != null ? r[a1.label] : ''), y = String(r[a2.label] != null ? r[a2.label] : ''), v = Number(r[metric.alias])
+      const x = String(mapDisp(r[a1.label], vm) != null ? mapDisp(r[a1.label], vm) : ''), y = String(mapDisp(r[a2.label], vm) != null ? mapDisp(r[a2.label], vm) : ''), v = Number(r[metric.alias])
       if (!xix.has(x)) { xix.set(x, xs.length); xs.push(x) }
       if (!yix.has(y)) { yix.set(y, ys.length); ys.push(y) }
       cells.push([xix.get(x), yix.get(y), Number.isFinite(v) ? v : 0])
@@ -472,7 +567,11 @@ async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'te
     const rowsH = applyHaving(rows, chart)
     return { type: chart.type, title: chart.title || '', option: buildOption(chart, rowsH), rows: rowsH }
   }
-  let agg = rows; if (chart.type !== 'table' || (chart.group_by && chart.group_by.length)) agg = aggregate(rows, chart); return { type: chart.type, title: chart.title || '', option: buildOption(chart, agg), rows: agg } }
+  let agg = rows; if (chart.type !== 'table' || (chart.group_by && chart.group_by.length)) agg = aggregate(rows, chart)
+  // P1-2 同环比：kpi + compare —— 主值聚合完成后，Host 对时间列筛选做对齐平移（prev_day/prev_period）再取一次数
+  let cmp = null
+  if (chart.type === 'kpi' && chart.compare) cmp = await computeCompare(ctx, chart, allFilters, agg)
+  return { type: chart.type, title: chart.title || '', option: buildOption(chart, agg, cmp), rows: agg } }
 // ===== 图表定义校验（审计 C12）=====
 // 决策：现在就收紧校验（多指标一律拒绝并给出明确修复指引），渲染能力后补。
 // 核心键一律 additionalProperties:false，杜绝拼写错误的键静默生效；
@@ -480,7 +579,7 @@ async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'te
 // filter：{column, op, value}（取数前筛选）或 {metric, op, value}（P1-3 having，聚合后筛选），二选一
 const filterItem = { type: 'object', additionalProperties: false, properties: { column: { type: 'string' }, metric: { type: 'string' }, op: { type: 'string', required: true, enum: ['=', '!=', '>', '>=', '<', '<=', 'IN', 'NOT_IN', 'LIKE', 'ILIKE', 'BETWEEN', 'IS_NULL', 'IS_NOT_NULL'] }, value: { type: 'json' } } }
 const AGG_ENUM = ['sum', 'count', 'avg', 'min', 'max', 'count_distinct']
-const metricItem = { type: 'object', additionalProperties: false, properties: { column: { type: 'string', required: true }, agg: { type: 'string', required: true, enum: AGG_ENUM }, alias: { type: 'string', required: true } } }
+const metricItem = { type: 'object', additionalProperties: false, properties: { column: { type: 'string', required: true }, agg: { type: 'string', required: true, enum: AGG_ENUM }, alias: { type: 'string', required: true }, format: { type: 'json' } } }
 // 每图型指标上限（P0-1）：柱/线/面积 4 条 series（第 2 条起双轴）；表格 6 个聚合列；
 // kpi 主值+对比值 2 个；其余图型保持该类型自然形态（1 个指标）
 const METRIC_CAPS = { bar: 4, line: 4, area: 4, table: 6, kpi: 2 }
@@ -490,9 +589,9 @@ const METRIC_CAPS = { bar: 4, line: 4, area: 4, table: 6, kpi: 2 }
 // join 项合法键与取值见 validateChartDef 的 join 段（单对象/对象数组 + type: left|inner）。
 // group_by 项：列名字符串 / 表达式字符串 / {expr, as} 对象，DSL 用 json 放行、JS 侧校验。
 // type 枚举扩展常见 ECharts 图型；heatmap 要求恰好 2 个 group_by；radar 当前按折线渲染。
-const chartDef = { type: 'object', additionalProperties: false, properties: { type: { type: 'string', required: true, enum: ['bar', 'line', 'area', 'pie', 'scatter', 'heatmap', 'radar', 'funnel', 'gauge', 'table', 'text', 'kpi'] }, title: { type: 'string', required: true }, table: { type: 'string', required: true }, join: { type: 'json' }, filters: { type: 'array', items: filterItem }, group_by: { type: 'array', items: { type: 'json' } }, metrics: { type: 'array', items: metricItem }, sort: { type: 'object', additionalProperties: false, properties: { by: { type: 'string' }, desc: { type: 'boolean' } } }, limit: { type: 'integer' }, text: { type: 'string' }, granularity: { type: 'string', enum: ['day', 'month'] }, time_column: { type: 'string' } } }
+const chartDef = { type: 'object', additionalProperties: false, properties: { type: { type: 'string', required: true, enum: ['bar', 'line', 'area', 'pie', 'scatter', 'heatmap', 'radar', 'funnel', 'gauge', 'table', 'text', 'kpi'] }, title: { type: 'string', required: true }, table: { type: 'string', required: true }, join: { type: 'json' }, filters: { type: 'array', items: filterItem }, group_by: { type: 'array', items: { type: 'json' } }, metrics: { type: 'array', items: metricItem }, sort: { type: 'object', additionalProperties: false, properties: { by: { type: 'string' }, desc: { type: 'boolean' } } }, limit: { type: 'integer' }, text: { type: 'string' }, granularity: { type: 'string', enum: ['day', 'month'] }, time_column: { type: 'string' }, value_map: { type: 'json' }, compare: { type: 'json' }, rules: { type: 'json' }, showTotals: { type: 'boolean' } } }
 const CHART_TYPES = ['bar', 'line', 'area', 'pie', 'scatter', 'heatmap', 'radar', 'funnel', 'gauge', 'table', 'text', 'kpi']
-const CHART_KEYS = ['type', 'title', 'table', 'join', 'filters', 'group_by', 'metrics', 'sort', 'limit', 'text', 'granularity', 'time_column']
+const CHART_KEYS = ['type', 'title', 'table', 'join', 'filters', 'group_by', 'metrics', 'sort', 'limit', 'text', 'granularity', 'time_column', 'value_map', 'compare', 'rules', 'showTotals']
 // JS 侧执行同一套约束并输出人类/模型可读的中文错误；text 图不取数，豁免 table/metrics。
 function validateChartDef(def, tag) {
   const errs = []
@@ -513,13 +612,22 @@ function validateChartDef(def, tag) {
       if (ms.length > cap) errs.push(tag + ': metrics 超出该图型上限（type "' + def.type + '" 最多 ' + cap + ' 个指标，当前 ' + ms.length + ' 个）；如需更多指标请拆成多个图表')
       ms.forEach(function (m, i) {
         if (!m || typeof m !== 'object') { errs.push(tag + ': metrics[' + i + '] 必须是对象'); return }
-        Object.keys(m).forEach(function (k) { if (['column', 'agg', 'alias'].indexOf(k) < 0) errs.push(tag + ': metrics[' + i + '] 含未知字段 "' + k + '"') })
+        Object.keys(m).forEach(function (k) { if (['column', 'agg', 'alias', 'format'].indexOf(k) < 0) errs.push(tag + ': metrics[' + i + '] 含未知字段 "' + k + '"') })
         if (!m.column) errs.push(tag + ': metrics[' + i + '].column 必填')
         if (AGG_ENUM.indexOf(m.agg) < 0) errs.push(tag + ': metrics[' + i + '].agg 必须为 ' + AGG_ENUM.join('/') + '（count_distinct=去重计数）')
         if (!m.alias) errs.push(tag + ': metrics[' + i + '].alias 必填')
       })
       const aliases = ms.filter(function (m) { return m && m.alias }).map(function (m) { return m.alias })
       if (aliases.length !== new Set(aliases).size) errs.push(tag + ': metrics 存在重复 alias（每指标别名必须唯一，输出列按 alias 命名）')
+      // R3 P2-1：metrics[].format 显示格式校验（{unit:'千'|'万', decimals 0~6, prefix}）
+      ms.forEach(function (m, i) {
+        if (!m || m.format === undefined) return
+        if (!m.format || typeof m.format !== 'object' || Array.isArray(m.format)) { errs.push(tag + ': metrics[' + i + '].format 必须是对象 {unit, decimals, prefix}'); return }
+        Object.keys(m.format).forEach(function (k) { if (['unit', 'decimals', 'prefix'].indexOf(k) < 0) errs.push(tag + ': metrics[' + i + '].format 含未知字段 "' + k + '"（允许: unit/decimals/prefix）') })
+        if (m.format.unit !== undefined && ['千', '万'].indexOf(m.format.unit) < 0) errs.push(tag + ': metrics[' + i + '].format.unit 必须为 "千" 或 "万"')
+        if (m.format.decimals !== undefined && (!Number.isInteger(m.format.decimals) || m.format.decimals < 0 || m.format.decimals > 6)) errs.push(tag + ': metrics[' + i + '].format.decimals 必须是 0~6 的整数')
+        if (m.format.prefix !== undefined && typeof m.format.prefix !== 'string') errs.push(tag + ': metrics[' + i + '].format.prefix 必须是字符串')
+      })
     }
     if (def.filters !== undefined && !Array.isArray(def.filters)) errs.push(tag + ': filters 必须是数组')
     if (Array.isArray(def.filters)) def.filters.forEach(function (f, i) {
@@ -553,6 +661,46 @@ function validateChartDef(def, tag) {
         try { parseExpr(m.column) } catch (e) { errs.push(tag + ': metrics[' + i + '].column 既不是列名也不是合法表达式（' + e.message + '）') }
       }
     })
+    // R3 P2-2：value_map 显示层枚举映射
+    if (def.value_map !== undefined) {
+      if (!def.value_map || typeof def.value_map !== 'object' || Array.isArray(def.value_map)) errs.push(tag + ': value_map 必须是 {原始值: 显示名} 对象')
+      else Object.keys(def.value_map).forEach(function (k) { if (typeof def.value_map[k] !== 'string') errs.push(tag + ': value_map["' + k + '"] 必须是字符串显示名') })
+    }
+    // R3 P1-2：kpi 同环比 compare（{type:'prev_day'|'prev_period'}，恰 1 个指标，不与月粒度混用）
+    if (def.compare !== undefined) {
+      if (def.type !== 'kpi') errs.push(tag + ': compare 同环比仅 kpi 支持（当前 type "' + def.type + '"）')
+      if (!def.compare || typeof def.compare !== 'object' || Array.isArray(def.compare)) errs.push(tag + ': compare 必须是对象 {type}')
+      else {
+        Object.keys(def.compare).forEach(function (k) { if (k !== 'type') errs.push(tag + ': compare 含未知字段 "' + k + '"（仅 type）') })
+        if (['prev_day', 'prev_period'].indexOf(def.compare.type) < 0) errs.push(tag + ': compare.type 必须为 prev_day/prev_period')
+      }
+      if (Array.isArray(def.metrics) && def.metrics.length !== 1) errs.push(tag + ': compare 需要恰好 1 个指标（主值），与双指标 compare 形态互斥')
+      if (def.granularity === 'month') errs.push(tag + ': compare 不支持 granularity:"month"（按日窗口定义时间筛选即可）')
+    }
+    // R3 P1-5：table 条件格式 rules 与合计行 showTotals
+    if (def.rules !== undefined) {
+      if (def.type !== 'table') errs.push(tag + ': rules 条件格式仅 table 支持（当前 type "' + def.type + '"）')
+      if (!Array.isArray(def.rules)) errs.push(tag + ': rules 必须是数组')
+      else def.rules.forEach(function (ru, i) {
+        if (!ru || typeof ru !== 'object' || Array.isArray(ru)) { errs.push(tag + ': rules[' + i + '] 必须是对象 {column, op, value, style}'); return }
+        Object.keys(ru).forEach(function (k) { if (['column', 'op', 'value', 'style'].indexOf(k) < 0) errs.push(tag + ': rules[' + i + '] 含未知字段 "' + k + '"') })
+        if (!ru.column || !String(ru.column).trim()) errs.push(tag + ': rules[' + i + '].column 必填（结果列名：指标 alias 或分组列）')
+        if (!ru.op) errs.push(tag + ': rules[' + i + '].op 必填')
+        if (!ru.style || typeof ru.style !== 'object' || Array.isArray(ru.style)) errs.push(tag + ': rules[' + i + '].style 必须是对象')
+        else {
+          const sk = Object.keys(ru.style)
+          if (!sk.length) errs.push(tag + ': rules[' + i + '].style 至少含 color/background 之一')
+          sk.forEach(function (k) {
+            if (['color', 'background'].indexOf(k) < 0) errs.push(tag + ': rules[' + i + '].style 含不支持字段 "' + k + '"（仅 color/background）')
+            else if (typeof ru.style[k] !== 'string') errs.push(tag + ': rules[' + i + '].style.' + k + ' 必须是字符串')
+          })
+        }
+      })
+    }
+    if (def.showTotals !== undefined) {
+      if (def.type !== 'table') errs.push(tag + ': showTotals 合计行仅 table 支持（当前 type "' + def.type + '"）')
+      if (typeof def.showTotals !== 'boolean') errs.push(tag + ': showTotals 必须是布尔值')
+    }
     if (def.type === 'heatmap') {
       if (!Array.isArray(def.group_by) || def.group_by.length !== 2) errs.push(tag + ': heatmap 需要恰好 2 个 group_by 维度（第一维=X 轴，第二维=Y 轴）')
       if (def.granularity) errs.push(tag + ': heatmap 不支持 granularity（月度粒度会丢失第二维）')
@@ -689,8 +837,8 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
     ;['vendorFile', 'storeFile', 'crawlConfigFile'].forEach(function (k) { if (CFG[k] && CFG[k].charAt(0) !== '/' && CFG[k].indexOf('://') < 0) CFG[k] = PERSIST_DIR + '/' + CFG[k] })
   })()
   const ws = ctx.get('webServer'); const fsv = ctx.get('fs'); const biApi = {}; if (ws && fsv) ctx.effect(() => ws.register({ kind: 'exact', path: ECHARTS_ROUTE, handler: async (req, res) => { try { await cfgReady; const t = await fsv.resolve(CFG.vendorFile); const buf = await fsv.readBytes(t, undefined, 4 * 1024 * 1024); res.setHeader('Content-Type', 'application/javascript'); res.setHeader('Cache-Control', 'public, max-age=3600'); res.writeHead(200); res.end(buf) } catch (e) { try { res.writeHead(404); res.end('not found') } catch (e2) {} } },}))
-  ctx.systemPrompt.section({ name: 'unmanned-store:dashboard-schema', order: 160, text: '【看板 Dashboard 生成】\n1. 调用 render_dashboard 生成看板（传入结构化 schema，顶层含 title/description/charts；销售必须 filters order_status=1；趋势图加时间过滤；字段来自 get_meta）。月度汇总柱状图可在图表定义里加 granularity:"month"，并用 time_column 指定日期列（缺省 order_date，Host 会按日聚合后合并为月）。指标（{column, agg, alias}）按图型有上限：bar/line/area ≤4 个（一个图同时看销售额+订单量等），table ≤6 个聚合列，kpi 最多 2 个（第 1 个=主值，第 2 个=对比值）；其余图型 1 个指标。直角坐标图 2+ 指标时第 2 条 series 自动挂第二 Y 轴（量纲悬殊的组合如 销售额+客单价 直接写两个指标即可）；各指标别名 alias 必须唯一。agg 支持 sum/count/avg/min/max/count_distinct（去重计数，如 成交人数=count_distinct(order_no)）。图表必须写 table。\n【进阶能力】图表类型支持 bar/line/area(面积图)/pie/scatter/heatmap/radar/funnel/gauge/table/text/kpi；heatmap 需恰好 2 个 group_by（第一维=X 轴、第二维=Y 轴）+1 指标；radar 当前按折线渲染。跨表关联：图表可加 join 关联维表——单对象 {table:"维表", left_key:"主表列", right_key:"维表关联列"} 或对象数组（链式，最多 4 级按序合并，后级 left_key 可引用前级产出的维表列，如 销售明细→商品主档→品类维度 后按 mid_category 分组）；可选项 join.type:"left"|"inner"（缺省 left=未命中事实行保留，inner=未命中事实行剔除）。Host 分别取各表后按行合并，维表字段可直接用于 group_by/metrics/filters（如主表含 cate_code 时 join category_dim 后即可按 big_category 分组）。计算字段：group_by 项与 metrics.column 可写表达式字符串（如 "product_price * product_qty"、"pay_amount / product_qty"、"month(order_date)"）或 {expr:"...", as:"别名"}；支持 + - * / % ^、( )、==/!=/<>、> >= < <=、and/or/not、a?b:c、null/true/false 字面量，函数 abs/round/floor/ceil/sqrt/pow/exp/ln/log/log10/min/max/coalesce/if/year/month/quarter/day/weekday(0=周日)/hour/minute/datediff(后,前)=相差天数/date_add(日期,n,单位=day|week|month|year|hour|minute)/length/concat/upper/lower；纯列名照旧直接取值。相对时间筛选：filters[].value 可写相对时间记号（渲染时解析为绝对时间）——"now"=当前时刻、"today"=今天、"today-1"=昨天、"-30d"/"+7w"/"-1m"=相对当前偏移（单位 d/w/m/y/h/min）、BETWEEN 数组逐项解析或对象 {relative:"-30d"}；同图多筛选共用同一 now 快照，每次打开看板自动重算窗口；日期列用 today 系（输出 YYYY-MM-DD），时间戳列用 now 系（输出完整时刻）。聚合后筛选（having）：filters 项可写 {metric:"<指标alias>", op, value}（如 "销售额>100 的品类"），在聚合后按指标值过滤，可与取数前 column 筛选叠加。\n2. 生成后，工具结果会给出本次预览ID（previewId）。用一句话总结看板要点，并在回复【最后】追加 dsh-ui 围栏，ID 必须使用本次返回的 previewId（每个看板一个独立ID，互不覆盖）：\n```\ndsh-ui\n{"kind":"dashboard","id":"<previewId>"}\n```\n3. 然后询问用户是否保存到「我的看板」，确认后调用 save_dashboard 工具。也可以让用户直接点预览卡片里每个图表旁的「保存」按钮单独保存。' })
-  const renderTool = defineTool({ name: 'render_dashboard', description: '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。图表类型含 bar/line/area/pie/scatter/heatmap(双维)/radar/funnel/gauge/table/text/kpi；多指标按图型上限（柱/线/面积≤4、表≤6、kpi≤2，2+ 指标自动双 Y 轴）；agg 含 count_distinct 去重计数；支持 join 跨表关联（单对象或链式数组，join.type=left|inner）、group_by/metrics 表达式计算字段（含 hour/minute/datediff/date_add）、相对时间筛选记号（now/today-1/-30d/{relative}）与 having 聚合后筛选（{metric, op, value}）。', parameters: { schema: { type: 'object', required: true, additionalProperties: true, properties: { title: { type: 'string' }, description: { type: 'string' }, charts: { type: 'array', items: chartDef } } } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已生成看板「' + (v.title || '') + '」，含 ' + (v.chartCount || 0) + ' 个图表。本次预览ID: ' + (v.previewId || '') + ' —— 回复末尾的 dsh-ui 围栏必须写成 {"kind":"dashboard","id":"' + (v.previewId || '') + '"}（用上面的预览ID）。候选筛选字段: ' + ((v.filterCandidates || []).join('、') || '（无维度字段）') + ' —— 请向用户确认要用作筛选的字段；用户确认后调用 save_dashboard 时通过 filter_fields 参数传入（数组，未确认则不传）。' }] }, async execute(args, exec) { const schema = args.schema || {}; assertChartDefs(schema.charts, 'charts['); let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; schemaSet(sessionId, schema); LAST_SCHEMA = { title: schema.title || '', description: schema.description || '', schema: schema };
+  ctx.systemPrompt.section({ name: 'unmanned-store:dashboard-schema', order: 160, text: '【看板 Dashboard 生成】\n1. 调用 render_dashboard 生成看板（传入结构化 schema，顶层含 title/description/charts；销售必须 filters order_status=1；趋势图加时间过滤；字段来自 get_meta）。月度汇总柱状图可在图表定义里加 granularity:"month"，并用 time_column 指定日期列（缺省 order_date，Host 会按日聚合后合并为月）。指标（{column, agg, alias}）按图型有上限：bar/line/area ≤4 个（一个图同时看销售额+订单量等），table ≤6 个聚合列，kpi 最多 2 个（第 1 个=主值，第 2 个=对比值）；其余图型 1 个指标。直角坐标图 2+ 指标时第 2 条 series 自动挂第二 Y 轴（量纲悬殊的组合如 销售额+客单价 直接写两个指标即可）；各指标别名 alias 必须唯一。agg 支持 sum/count/avg/min/max/count_distinct（去重计数，如 成交人数=count_distinct(order_no)）。图表必须写 table。\n【进阶能力】图表类型支持 bar/line/area(面积图)/pie/scatter/heatmap/radar/funnel/gauge/table/text/kpi；heatmap 需恰好 2 个 group_by（第一维=X 轴、第二维=Y 轴）+1 指标；radar 当前按折线渲染。跨表关联：图表可加 join 关联维表——单对象 {table:"维表", left_key:"主表列", right_key:"维表关联列"} 或对象数组（链式，最多 4 级按序合并，后级 left_key 可引用前级产出的维表列，如 销售明细→商品主档→品类维度 后按 mid_category 分组）；可选项 join.type:"left"|"inner"（缺省 left=未命中事实行保留，inner=未命中事实行剔除）。Host 分别取各表后按行合并，维表字段可直接用于 group_by/metrics/filters（如主表含 cate_code 时 join category_dim 后即可按 big_category 分组）。计算字段：group_by 项与 metrics.column 可写表达式字符串（如 "product_price * product_qty"、"pay_amount / product_qty"、"month(order_date)"）或 {expr:"...", as:"别名"}；支持 + - * / % ^、( )、==/!=/<>、> >= < <=、and/or/not、a?b:c、null/true/false 字面量，函数 abs/round/floor/ceil/sqrt/pow/exp/ln/log/log10/min/max/coalesce/if/year/month/quarter/day/weekday(0=周日)/hour/minute/datediff(后,前)=相差天数/date_add(日期,n,单位=day|week|month|year|hour|minute)/length/concat/upper/lower；纯列名照旧直接取值。相对时间筛选：filters[].value 可写相对时间记号（渲染时解析为绝对时间）——"now"=当前时刻、"today"=今天、"today-1"=昨天、"-30d"/"+7w"/"-1m"=相对当前偏移（单位 d/w/m/y/h/min）、BETWEEN 数组逐项解析或对象 {relative:"-30d"}；同图多筛选共用同一 now 快照，每次打开看板自动重算窗口；日期列用 today 系（输出 YYYY-MM-DD），时间戳列用 now 系（输出完整时刻）。聚合后筛选（having）：filters 项可写 {metric:"<指标alias>", op, value}（如 "销售额>100 的品类"），在聚合后按指标值过滤，可与取数前 column 筛选叠加。显示层格式化：metrics 项可加 format {unit:"千"|"万", decimals:0~6, prefix:"¥"}（表格单元格与 kpi 数值按 千/万 缩放+前缀+千分位+小数位显示，如 6698990+{unit:"万",decimals:1,prefix:"¥"} → ¥669.9万；原始聚合值不变；柱/线等数值轴仍按原始刻度）。枚举映射：图表级可加 value_map {原始值:"显示名"}（表格分组列与轴/饼图类目名显示层映射，如 {"0":"待处理","1":"已处理"}）。kpi 同环比：kpi 可加 compare {type:"prev_day"|"prev_period"}（需带时间列筛选；Host 自动把时间窗对齐平移前一日/上一等长窗口再取一次数，KPI 显示值附「较前一日/较上一周期 ±x.x%」；此时 metrics 恰 1 个，不与 granularity:"month" 混用）。表格增强：table 可加 rules [{column, op, value, style:{color,background}}] 条件格式（匹配行/单元格按规则着色；当前客户端表格暂不渲染样式，仅透出数据）与 showTotals:true（数值指标列自动追加合计行）。\n2. 生成后，工具结果会给出本次预览ID（previewId）。用一句话总结看板要点，并在回复【最后】追加 dsh-ui 围栏，ID 必须使用本次返回的 previewId（每个看板一个独立ID，互不覆盖）：\n```\ndsh-ui\n{"kind":"dashboard","id":"<previewId>"}\n```\n3. 然后询问用户是否保存到「我的看板」，确认后调用 save_dashboard 工具。也可以让用户直接点预览卡片里每个图表旁的「保存」按钮单独保存。' })
+  const renderTool = defineTool({ name: 'render_dashboard', description: '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。图表类型含 bar/line/area/pie/scatter/heatmap(双维)/radar/funnel/gauge/table/text/kpi；多指标按图型上限（柱/线/面积≤4、表≤6、kpi≤2，2+ 指标自动双 Y 轴）；agg 含 count_distinct 去重计数；支持 join 跨表关联（单对象或链式数组，join.type=left|inner）、group_by/metrics 表达式计算字段（含 hour/minute/datediff/date_add）、相对时间筛选记号（now/today-1/-30d/{relative}）与 having 聚合后筛选（{metric, op, value}）。展示层：metrics.format（千/万缩放/前缀/小数位）、value_map 枚举映射、kpi compare 同环比（prev_day/prev_period）、table rules 条件格式与 showTotals 合计行。', parameters: { schema: { type: 'object', required: true, additionalProperties: true, properties: { title: { type: 'string' }, description: { type: 'string' }, charts: { type: 'array', items: chartDef } } } }, output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已生成看板「' + (v.title || '') + '」，含 ' + (v.chartCount || 0) + ' 个图表。本次预览ID: ' + (v.previewId || '') + ' —— 回复末尾的 dsh-ui 围栏必须写成 {"kind":"dashboard","id":"' + (v.previewId || '') + '"}（用上面的预览ID）。候选筛选字段: ' + ((v.filterCandidates || []).join('、') || '（无维度字段）') + ' —— 请向用户确认要用作筛选的字段；用户确认后调用 save_dashboard 时通过 filter_fields 参数传入（数组，未确认则不传）。' }] }, async execute(args, exec) { const schema = args.schema || {}; assertChartDefs(schema.charts, 'charts['); let sessionId = 'unknown'; try { sessionId = exec.agent && exec.agent.session ? exec.agent.session.id : 'unknown' } catch (e) {}; schemaSet(sessionId, schema); LAST_SCHEMA = { title: schema.title || '', description: schema.description || '', schema: schema };
         const pid = 'pv' + Date.now() + Math.random().toString(36).slice(2, 6)
         // 预览持久化失败不再静默吞掉：store 读/写错误直接抛给调用方（审计 C1 写错误传播）
         const st0 = await readStore(); st0.previews = st0.previews || {}
@@ -899,7 +1047,7 @@ export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tool
   ctx.tools.register(queryTool)
   const modifyTool = defineTool({
     name: 'modify_chart',
-    description: '修改「我的看板」中已保存图表的定义（指标/维度/时间范围/图表类型/多指标双轴/join 跨表关联/表达式计算字段/having 聚合后筛选等）。',
+    description: '修改「我的看板」中已保存图表的定义（指标/维度/时间范围/图表类型/多指标双轴/join 跨表关联/表达式计算字段/having 聚合后筛选/指标格式化/value_map 枚举映射/kpi 同环比/表格条件格式与合计行等）。',
     parameters: { id: { type: 'string', required: true, description: '要修改的图表 id' }, chart_def: chartDef },
     output: { schema: { type: 'object', additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: '已修改图表「' + (v.title || '') + '」(' + (v.type || '') + ')。' }] },
     async execute(args, exec) {

@@ -32,3 +32,11 @@
 - **验证**：R2 harness 34/34（销售额+订单量双 series、件单价第二 Y 轴 yAxisIndex=1、采购三聚合列表格、重复行 count_distinct 当日成交人数/在售SKU数、销售额>100 having 及与 pre-agg 筛选/limit 组合、各图型上限 named-field 报错、kpi value+compare）；R1 harness 18/18；R1 6 定义 + R2 6 旧式定义 payload+render 与 pre-R2 lib cmp 字节相等（向后兼容）；node --check ×2 + npm run build 通过
 - **契约要点**：多指标是通用组合规则非新图型（一条规则解锁一整类「量纲悬殊双轴」看板）；count_distinct 不可按日/月分解，月值=集合并集 size（见 PLUGIN.md E8）；having 绝不进入取数 payload（metric 无 column，服务端必 400），复用 jsFilterMatch 全 op；kpi 第 2 指标仅透出 option.compare 数值，P1-2 同环比下轮在此落点
 - **提交**：feature/bi-capability-v2 @ eb81c1b + docs（本次）
+
+### 12.5 bi-capability-v2 r3 —— 展示层能力增强（P2-1 / P2-2 / P1-2 / P1-5）+ 更新提示语精简
+
+- **目标**：展示半部能力提升：① 指标格式化（metrics[].format {unit:'千'|'万', decimals, prefix:'¥'}，显示层 千/万缩放+前缀+千分位+小数位）；② 枚举映射（图表级 value_map {原始值:显示名}，表格分组列与轴/饼图/热力图类目名显示层映射）；③ kpi 同环比（compare {type:'prev_day'|'prev_period'}，Host 复用相对筛选机制解析时间窗后对齐平移，自行补一次 /api/query 取对比值）；④ 表格条件格式 rules（{column,op,value,style:{color,background}}）+ showTotals 数值列合计行；⑤ 附带文案：UPD_NATIVE_HINT 精简为「点更新将拉取最新版本」（通道逻辑零改动）
+- **产出**：`src/index.js`（fmtMetricDisplay/mapDisp/buildTableOption 显示副本层 + shiftAbsDateStr/periodSpanDays/computeCompare 同环比取数；buildOption 增加 cmp 形参，未用新键路径逐字节不变；validateChartDef format/value_map/compare/rules/showTotals 全量校验；systemPrompt / render_dashboard / /bi-create / modify_chart 契约文案同步）；`scripts/verify-bicap-r3.mjs`（8612 端口回归 harness，支持 pre-R3/新 lib 双跑字节对拍）；lib/index.js 重建；CHART.md L1 层同环比表述更新 + 需求确认清单新增 4 条推荐；PLUGIN.md E9（探针先于宣称）
+- **验证**：R3 harness 35/35（6,698,990→¥669.9万 kpi+表格且原始行不变、value_map 待处理/已处理仅显示层、注入时钟证明 prev_day/prev_period 窗口随时钟平移且 payload 落在前一日/上一等长窗、rules cellStyles+showTotals 合计 23/70、全部 named-field 报错）；R1 18/18、R2 34/34；8 旧式定义（含 R2 kpi 双指标形态）payload+render 与 pre-R3 lib cmp 字节相等（向后兼容）；echarts 5.5.1 SSR 探针证明格式化字符串不能进 series.data（见 E9）；node --check ×2 + npm run build 通过
+- **契约要点**：一切展示变换只落 client 真正渲染的面——kpi 仅渲染 option.value 文本（同环比副标签并入 value，compare/comparePct/compareLabel 结构化透出）；表格 td 不消费样式（cellStyles 仅数据透出并如实记录）；option 经 JSON 序列化，formatter 函数不可用；柱/线 series 保持数值轴原始刻度
+- **提交**：feature/bi-capability-v2 @ eee64e6 + docs（本次）

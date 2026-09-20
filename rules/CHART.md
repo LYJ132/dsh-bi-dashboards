@@ -44,7 +44,7 @@
 | 层级 | 含义 | 处理方式 |
 |------|------|----------|
 | **L0** 普通聚合 | chart_def 直接表达（单表 + 简单 filters/group_by/metrics） | 直接绘制 |
-| **L1** 复杂查询 | 窗口函数 / 同环比 / 多表关联超出 join 能力 | 建议 PG 视图（SQL 归档 `sql/views/`），图表当普通表用；**维表关联与列间运算属图表原生能力**：join 单对象 `{table, left_key, right_key}` 或链式对象数组（最多 4 级按序合并，后级 left_key 可引用前级产出列，可选 `type:"left"|"inner"`，缺省 left=未命中事实行保留）+ group_by/metrics 表达式 + 相对时间筛选记号，不必建视图；同环比计算目前仍建议视图 |
+| **L1** 复杂查询 | 窗口函数 / 同环比 / 多表关联超出 join 能力 | 建议 PG 视图（SQL 归档 `sql/views/`），图表当普通表用；**维表关联与列间运算属图表原生能力**：join 单对象 `{table, left_key, right_key}` 或链式对象数组（最多 4 级按序合并，后级 left_key 可引用前级产出列，可选 `type:"left"|"inner"`，缺省 left=未命中事实行保留）+ group_by/metrics 表达式 + 相对时间筛选记号，不必建视图；kpi 同环比已原生：`compare {type:"prev_day"|"prev_period"}`（需时间列筛选，Host 自动对齐平移前一日/上一等长窗口取数），非 kpi 图或复杂窗口仍建议视图 |
 | **L2** 离线算法 | 预测 / 分层 / 异常检测 | 结果表方案（`bi_plugin` schema），算法脚本按例外约定或登记新位置 |
 | **L3** 在线参数化 | 实时推理端点（最后考虑） | 算法服务推理端点 |
 
@@ -65,6 +65,10 @@
    - 派生指标（客单价/单价等列间运算）→ metrics/group_by 写表达式即可，无需预建视图
    - 24x7 时段分布 → heatmap + group_by `["hour(order_create_time)","weekday(order_date)"]`（hour/minute/datediff/date_add 等日期函数可用于 group_by/metrics 表达式）
    - 一图多指标 → bar/line/area ≤4 个 metrics（第 2 条 series 自动挂第二 Y 轴，量纲悬殊组合免视图）、table ≤6 个聚合列、kpi 主值+对比值 ≤2 个；去重计数 `agg:"count_distinct"`（如 成交人数）；按聚合结果过滤（销售额>100 的品类）用 filters `{metric:"<alias>", op, value}`（having，聚合后执行），均无需预建视图
+   - 数值格式化 → metrics 加 `format {unit:"千"|"万", decimals, prefix:"¥"}`（表格单元格与 kpi 数值按缩放+前缀+千分位显示，如 6698990+万/1/¥ → ¥669.9万；原始值不变；柱/线数值轴仍显示原始刻度）
+   - 枚举映射 → 图表加 `value_map {原始值:"显示名"}`（表格分组列与轴/饼图类目名显示层映射，如订单状态 0/1 → 待处理/已处理）
+   - kpi 同环比 → kpi 加 `compare {type:"prev_day"|"prev_period"}`（需时间列筛选；metrics 恰 1 个；显示值附「较前一日/较上一周期 ±x.x%」）
+   - 表格增强 → `rules [{column, op, value, style:{color,background}}]` 条件格式（注意：当前客户端表格不渲染单元格样式，规则仅透出数据）与 `showTotals:true` 数值列合计行
    - 按数据形状推荐后向用户确认
 3. **筛选项（自动推荐）**：
    - 从 group_by 维度与既有 filterable 字段提炼候选

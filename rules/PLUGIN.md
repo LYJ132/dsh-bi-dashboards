@@ -73,6 +73,14 @@
 - **验证**：harness 用重复原始行（同日两行同 order_no）验证组路径去重；月路径 7 个独立订单跨 4 天聚合为月值 7（而非日值之和）；R1/R2 兼容双跑逐字节对拍证明旧定义零改动
 - **教训**：给聚合管线加新聚合函数时，先判断该函数在所有中间聚合层（日→月、组→sort/limit）上是否可分解；不可分解的聚合要在每一层改为携带集合，沿用「数值累加」骨架的可分解假设必然算错
 
+### E9：展示层能力先探针后宣称——client 只渲染 option.value/表格纯文本，格式化函数过不了 JSON（2026-09-20）
+
+- **症状**：R3 落地 P2-1 指标格式化 / P1-2 kpi 同环比 / P1-5 表格条件格式时，最初想把 ECharts axisLabel/tooltip formatter、表格 td style 直接挂进 option —— 需先确认 client 端到底渲染什么
+- **根因**：三层探测结论（client.js 阅读 + echarts 5.5.1 SSR 渲染对拍）：① option 经 biApi JSON 序列化到客户端，任何 function（formatter）都过不了 JSON；② kpi 渲染（React 与静态 DOM 两路径）只输出 `option.value` 文本，`option.compare` 等其余字段不渲染；③ 表格 td 仅取 `String(cell)`，不消费任何样式；SSR 对拍证明 series.data 换成格式化字符串会破坏数值轴（path 数 14→4，柱子不画）
+- **修复**：格式化只落在 client 真正渲染的文本面上——kpi 把「较前一日 -25%」并入 option.value 文本 + compare/comparePct/compareLabel 结构化字段同步透出；表格走显示副本行（option.rows 格式化拷贝，原始 rows 不动），cellStyles 作为数据透出并在文档明示「客户端表格暂不渲染样式」；柱/线 series 保持数值，文档写明数值轴仍按原始刻度。绝不把渲染不了的能力写进 systemPrompt 宣称
+- **验证**：R3 harness 35/35（kpi/表格格式化值、value_map 显示层映射、注入时钟证明同环比窗口平移、rules/showTotals）；兼容双跑 8 旧定义 payload+结果与 pre-R3 lib cmp 字节相等
+- **教训**：「往 option 里塞了」≠「用户看得到」——展示层能力落地前必须先探针渲染管线（读 client 代码 + SSR/浏览器实测），只在确认能渲染的面上做宣称，其余以数据透出并如实记录
+
 ## 开发契约速查（创造模式必读，细节见 git 历史 0098511 版 DEVELOPMENT.md）
 
 1. **声明红线**：client package.json `dsh.client.inject` 必须为 `[]`；bundle `exports.inject` 只许 `['slots']`（timer 走 window、sessions 走 ctx.get、CSS 走 injectCss）
