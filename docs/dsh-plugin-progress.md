@@ -87,3 +87,11 @@
 - **验证**：R6 harness 33/33（S1 符号链接 realpath 探针经 node --preserve-symlinks 使 PKG_DIR 本身为符号链接、仅 realpathSync 可识别 + 直连对照；S2 端到端 Gitee 压缩包覆盖 + dsh 全程零调用 + 清单外 unrelated.txt/vendor/keep.txt/data/user.json 哨兵原样 + rogue 文件不落盘 + PERSIST_DIR 哨兵原样 + 「重启 DSH 生效」语义；S3 Gitee 503→GitHub 备通道 note；S4 双通道不可达→`sh -lc dsh`→127→「未找到 dsh 命令」手动提示且安装目录原样；S5 降级非 127 失败→双通道合并报错；S6 降级成功→native-add+降级 note；S7 detached HEAD 优雅报告 + argvLog 证明无破坏性 git 命令）；R1 18/18、R2 34/34、R3 35/35、R4 27/0；npm run build + capability guard（19 记号）+ node --check ×3 通过
 - **契约要点**：快照更新安全不变量从「只调官方 add」换成「清单内覆盖、清单外绝不触碰」（哨兵文件断言可机器证明，比整目录重装更易验证）；覆盖清单以压缩包内新 package.json `files` 为准（新版定义随包内容），`cordis.patch.yml` 强制在列；清单项拒绝绝对路径与 `..` 越界；进程内自动更新不依赖宿主未注入的 CLI/PATH（E11 教训）
 - **提交**：feature/update-stability @ fd461f6 / 50a6164 / d425dc2（本次）
+
+### 12.9 bi-capability-v2 r7 —— 现场回归双修：granularity:'day' 日分桶落地 + 相对记号按列型截断（字段报障）
+
+- **目标**：修复 v1.2.0 部署后现场反馈的两处 Host 侧回归——① line/area 图 `granularity:"day"` 整表聚合塌缩为一个点（month 正常）；② `'+30d'`/裸偏移与 now 系记号在纯 date 列输出完整 datetime，数据服务 400 `Invalid value for ... (date) column`。要求修复后用户的 month-顶替/静态上界两种绕法不再必要、存量配置零迁移
+- **根因结论（非 refactor 回归）**：`git log -S "granularity === 'day'"` 全历史零命中 + v1.1.7/master lib 双跑同样塌缩证明 day 分支从未实现（枚举自 26d3d93 即有）；R1 相对记号/R2 多指标的契约普及了「granularity:'day' 不带 group_by」写法才暴露缺口；(B) 是 R1 输出规则把裸偏移归 now 系且无列型感知，「日期列用 today 系」契约把列型选择推给模型侧
+- **产出**：`src/index.js`（renderChartDef day 分支 bar/line/area 日分桶复用 aggregate 全套聚合+having/sort/limit、timestamp 列 slice 归日、kpi/table 不受影响；neededColumns day 兜底 order_date；tableColsCache→tableMeta 同存 names+types；含记号定义 resolveFilters 传 typeOf、meta 缺失降级）；`src/bi-expr.js`（resolveRelToken/resolveFilterValue/resolveFilters dateOnly 参数 + filtersUseRelTokens 探测）；`src/bi-capabilities.js`（relTokenSentence 按列型自动适配口径 + capabilityFacts 新增 rel_output/granularity 两边 + PROSE_HEAD 日粒度句）；RENDER_TOOL_DESC/BI_CREATE_PROMPT 同步；lib/index.js 重建；`scripts/verify-bicap-r7.mjs`（8615 mock 复刻 query.py date 校验）；CHART.md 粒度/记号口径、PLUGIN.md E12
+- **验证**：r7 harness 新 lib 34/34、master lib 22 FAIL（错误文本与现场逐字一致）；r1-r4 feature 18/34/35/27 全绿、r6 33/33、r1-r4+r7 compat 双跑 payload+render cmp 字节相等；npm run build + capability guard 19 记号 + node --check 通过
+- **提交**：feature/bi-capability-v2 @ 415be10（fix）/ 2efe81f（harness）/ 本次 docs 提交；待主代理合入
