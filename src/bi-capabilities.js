@@ -35,7 +35,7 @@ function exprFuncsSentence() {
 }
 // 生成：相对时间记号句（单位来自 REL_UNITS）
 function relTokenSentence() {
-  return '相对时间筛选：filters[].value 可写相对时间记号（渲染时解析为绝对时间）——"now"=当前时刻、"today"=今天、"today-1"=昨天、"-30d"/"+7w"/"-1m"=相对当前偏移（单位 ' + REL_UNITS.join('/') + '）、BETWEEN 数组逐项解析或对象 {relative:"-30d"}；同图多筛选共用同一 now 快照，每次打开看板自动重算窗口；日期列用 today 系（输出 YYYY-MM-DD），时间戳列用 now 系（输出完整时刻）。'
+  return '相对时间筛选：filters[].value 可写相对时间记号（渲染时解析为绝对时间）——"now"=当前时刻、"today"=今天、"today-1"=昨天、"-30d"/"+7w"/"-1m"=相对当前偏移（单位 ' + REL_UNITS.join('/') + '）、BETWEEN 数组逐项解析或对象 {relative:"-30d"}；同图多筛选共用同一 now 快照，每次打开看板自动重算窗口；输出形态按筛选列类型自动适配（Host 查表元数据）：date 列一律输出 YYYY-MM-DD（裸偏移与 now 系同样截断到日期），timestamp 列保持 now 系/时分偏移输出完整时刻、today 系日级偏移输出 YYYY-MM-DD。'
 }
 // 生成：agg 枚举句
 function aggSentence() {
@@ -61,6 +61,8 @@ export function capabilityFacts() {
     'join: 单对象或链式数组≤' + JOIN_MAX_LEVELS + '级 type=left|inner(缺省left)',
     'expr_funcs: ' + EXPR_FUNCS.join('/'),
     'rel_tokens: now/today/today-N/±Nu 单位' + REL_UNITS.join('/'),
+    'rel_output: date列一律YYYY-MM-DD(timestamp列now系完整时刻/today系日级日期)',
+    'granularity: day(bar/line/area 按日分桶一日一点)/month(按日聚合合并为月) time_column缺省order_date',
     'having: filters{metric,op,value}',
     'format: {unit:"千"|"万",decimals 0~6,prefix}',
     'value_map/rules/showTotals: table 展示增强',
@@ -89,6 +91,6 @@ export function describeCapabilities() {
   ].join('\n')
 }
 // systemPrompt 段全文 = 流程散文(手写,无事实数字) + 生成事实 + 流程散文
-const PROSE_HEAD = '【看板 Dashboard 生成】\n1. 调用 render_dashboard 生成看板（传入结构化 schema，顶层含 title/description/charts；销售必须 filters order_status=1；趋势图加时间过滤；字段来自 get_meta）。月度汇总柱状图可在图表定义里加 granularity:"month"，并用 time_column 指定日期列（缺省 order_date，Host 会按日聚合后合并为月）。'
+const PROSE_HEAD = '【看板 Dashboard 生成】\n1. 调用 render_dashboard 生成看板（传入结构化 schema，顶层含 title/description/charts；销售必须 filters order_status=1；趋势图加时间过滤；字段来自 get_meta）。日粒度趋势图（bar/line/area）在图表定义里加 granularity:"day"，Host 按日分桶、一日一个点；月度汇总柱状图加 granularity:"month"，Host 按日聚合后合并为月；两者都可用 time_column 指定日期列（缺省 order_date）。'
 const PROSE_TAIL = '\n2. 生成后，工具结果会给出本次预览ID（previewId）。用一句话总结看板要点，并在回复【最后】追加 dsh-ui 围栏，ID 必须使用本次返回的 previewId（每个看板一个独立ID，互不覆盖）：\n```\ndsh-ui\n{"kind":"dashboard","id":"<previewId>"}\n```\n3. 然后询问用户是否保存到「我的看板」，确认后调用 save_dashboard 工具。也可以让用户直接点预览卡片里每个图表旁的「保存」按钮单独保存。'
 export function dashboardSchemaSection() { return PROSE_HEAD + describeCapabilities() + PROSE_TAIL }

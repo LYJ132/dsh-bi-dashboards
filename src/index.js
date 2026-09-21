@@ -4,7 +4,7 @@ import { existsSync, readFileSync, realpathSync, promises as fsp } from 'node:fs
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 // 表达式求值 / join 合并 / JS 行过滤纯函数层（esbuild 打包时并入 lib/index.js）
-import { EXPR_IDENT, parseExpr, exprCols, colAccessor, metricAccessor, evalKeysIfExpr, mergeJoinRows, normalizeJoins, applyJsFilters, resolveFilters, currentNow, setNowProvider, resolveRelToken, havingFilters, applyHaving, jsFilterMatch } from './bi-expr.js'
+import { EXPR_IDENT, parseExpr, exprCols, colAccessor, metricAccessor, evalKeysIfExpr, mergeJoinRows, normalizeJoins, applyJsFilters, resolveFilters, currentNow, setNowProvider, resolveRelToken, havingFilters, applyHaving, jsFilterMatch, filtersUseRelTokens } from './bi-expr.js'
 // 能力契约单一事实源（R4 P2-5）：图型/上限/枚举常量与 systemPrompt 事实句全部由此渲染，
 // 手写文本与生成事实的分歧由 scripts/verify-capability-guard.mjs 在 build/verify 路径 loudly 报错
 import { CHART_TYPES, METRIC_CAPS, AGG_ENUM, JOIN_MAX_LEVELS, describeCapabilities, capabilityFacts, dashboardSchemaSection } from './bi-capabilities.js'
@@ -515,19 +515,26 @@ function addColumnRefs(s, ref) {
   else return
   try { exprCols(parseExpr(expr)).forEach(function (c) { s.add(c) }) } catch (e) {}
 }
-function neededColumns(chart) { const s = new Set(); (chart.group_by || []).forEach(c => addColumnRefs(s, c)); (chart.metrics || []).forEach(m => { if (m && m.column) addColumnRefs(s, m.column) }); (chart.filters || []).forEach(f => f.column && s.add(f.column)); const tc = chart.time_column || (chart.granularity === 'month' ? 'order_date' : null); if (tc) s.add(tc); return Array.from(s) }
-// 表列元数据缓存（GET /api/meta/table/{t} → Set<列名>；失败返回 null 不缓存，join 走降级路径）
-const tableColsCache = new Map()
-async function tableColumnNames(ctx, table) {
-  if (tableColsCache.has(table)) return tableColsCache.get(table)
-  let set = null
+function neededColumns(chart) { const s = new Set(); (chart.group_by || []).forEach(c => addColumnRefs(s, c)); (chart.metrics || []).forEach(m => { if (m && m.column) addColumnRefs(s, m.column) }); (chart.filters || []).forEach(f => f.column && s.add(f.column)); const tc = chart.time_column || ((chart.granularity === 'month' || chart.granularity === 'day') ? 'order_date' : null); if (tc) s.add(tc); return Array.from(s) }
+// 表列元数据缓存（GET /api/meta/table/{t} → {names:Set<列名>, types:Map<列名,data_type>}；
+// 失败返回 null 不缓存，join 走降级路径，相对时间记号走「不查类型=既有输出形态」降级路径。
+// r7-B：types 供 date/timestamp 列判定；r7-A 前 join 路径只用 names，语义不变）
+const tableMetaCache = new Map()
+async function tableMeta(ctx, table) {
+  if (tableMetaCache.has(table)) return tableMetaCache.get(table)
+  let meta = null
   try {
-    const meta = await getJson(ctx, 'GET', '/api/meta/table/' + encodeURIComponent(table), undefined, 8000)
-    if (meta && Array.isArray(meta.columns)) set = new Set(meta.columns.map(function (c) { return c && c.name }).filter(Boolean))
-  } catch (e) { set = null }
-  if (set) { if (tableColsCache.size > 100) tableColsCache.clear(); tableColsCache.set(table, set) }
-  return set
+    const resp = await getJson(ctx, 'GET', '/api/meta/table/' + encodeURIComponent(table), undefined, 8000)
+    if (resp && Array.isArray(resp.columns)) meta = { names: new Set(resp.columns.map(function (c) { return c && c.name }).filter(Boolean)), types: new Map(resp.columns.filter(function (c) { return c && c.name }).map(function (c) { return [c.name, String(c.type || c.data_type || '')] })) }
+  } catch (e) { meta = null }
+  if (meta) { if (tableMetaCache.size > 100) tableMetaCache.clear(); tableMetaCache.set(table, meta) }
+  return meta
 }
+async function tableColumnNames(ctx, table) { const m = await tableMeta(ctx, table); return m ? m.names : null }
+async function tableColTypes(ctx, table) { const m = await tableMeta(ctx, table); return m ? m.types : null }
+// granularity:'day' 日分桶适用的时序图型（r7-A）：直角坐标 bar/line/area（与 METRIC_CAPS 时序三兄弟同族）；
+// kpi/table/text 维持既有聚合语义（kpi 的「近N日合计」单值、table 的明细行不受影响），heatmap 本就不允许 granularity。
+const DAY_BUCKET_TYPES = ['bar', 'line', 'area']
 async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'text') return { type: 'text', title: chart.title || '', text: chart.text || '' };
   // ===== 相对时间筛选（P0-3）：解析一次 now 快照（每图渲染一个 now，确定性）， =====
   // ===== 记号值('now'/'today-1'/'-30d'/{relative}) 在取数前统一替换为绝对时间， =====
@@ -535,7 +542,19 @@ async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'te
   // ===== having（P1-3）：{metric,op,value} 筛选拆出，聚合后执行，绝不进入取数 payload。 =====
   const nowSnap = currentNow()
   const preFilters = (chart.filters || []).filter(function (f) { return !(f && typeof f === 'object' && !Array.isArray(f) && f.metric !== undefined && f.metric !== '') })
-  const allFilters = resolveFilters(preFilters.concat(extraFilters || []), nowSnap)
+  const allRawFilters = preFilters.concat(extraFilters || [])
+  // ===== r7-B：含相对时间记号时按筛选列 data_type 决定输出形态——date 列一律 YYYY-MM-DD =====
+  // ===== （裸偏移 -30d/+30d 与 now 系同样截断，避免数据服务 date 列 400）；timestamp/未知类型 =====
+  // ===== 保持既有形态（now 系完整 datetime）。列类型走 join 路径同款 meta 缓存；无记号定义 =====
+  // ===== 不产生额外请求（旧静态筛选 payload 逐字节不变的前提）。now 快照仍每图一次（确定性）。 =====
+  let filterTypeOf = null
+  if (filtersUseRelTokens(allRawFilters)) {
+    const typeMaps = []
+    const mainTypes = await tableColTypes(ctx, chart.table); if (mainTypes) typeMaps.push(mainTypes)
+    for (const j of normalizeJoins(chart.join)) { const t = await tableColTypes(ctx, j.table); if (t && typeMaps.indexOf(t) < 0) typeMaps.push(t) }
+    if (typeMaps.length) filterTypeOf = function (col) { for (const m of typeMaps) { const t = m.get(col); if (t) return t } return undefined }
+  }
+  const allFilters = resolveFilters(allRawFilters, nowSnap, filterTypeOf)
   // ===== 跨表关联（feat-20260920-chart-schema；bi-capability-v2 扩展：join 数组链式 + join.type）=====
   // meta 可用时裁列：事实查询只取事实列（含各级主表侧关联键），每级维表查询取该级被引用的维表列+关联键；
   // 维表列上的筛选合并后走 JS 执行（服务端筛选无法正确剔除"未命中维表"的事实行）。
@@ -584,6 +603,30 @@ async function renderChartDef(ctx, chart, extraFilters) { if (chart.type === 'te
     const dimData = await getJson(ctx, 'POST', '/api/query', dp)
     rows = mergeJoinRows(rows, dimData.rows || [], j.left_key, j.right_key, j.type)
     if (dimFilterGroups[ji] && dimFilterGroups[ji].length) rows = applyJsFilters(rows, dimFilterGroups[ji])
+  }
+  // ===== r7-A：granularity:'day' 此前在 renderChartDef 里根本没有分支（枚举自 26d3d93 就含 day， =====
+  // ===== 历史无一日实现；旧「按日趋势」全靠 group_by:['order_date'] 承担分组）。v1.2.0 的模型指引 =====
+  // ===== 普及了 granularity:'day' 不带 group_by 的写法后，此类定义落进 aggregate() 的空分组， =====
+  // ===== 整表塌缩为一个点。现在 bar/line/area 的 day 粒度统一按 time_column（缺省 order_date） =====
+  // ===== 日分桶：桶键 String(r[tc]).slice(0,10)（timestamp 列亦正确归一日），聚合复用 aggregate() =====
+  // ===== 全套语义（sum/count/count_distinct/avg/min/max + having/sort/limit），一日一个点。 =====
+  if (chart.granularity === 'day' && DAY_BUCKET_TYPES.indexOf(chart.type) >= 0) {
+    const tc = chart.time_column || 'order_date'
+    // 与月路径一致：时间列为空的行无法归日，不参与日分桶（月路径 if (!d) return 同款语义）
+    const bucketed = []
+    for (const r of rows) {
+      const v = r[tc]
+      if (v === null || v === undefined || v === '') continue
+      const o = Object.assign({}, r); o[tc] = String(v).slice(0, 10); bucketed.push(o)
+    }
+    const dayChart = (chart.group_by && chart.group_by.length) ? chart : Object.assign({}, chart, { group_by: [tc] })
+    let rowsD = aggregate(bucketed, dayChart)
+    // 无显式 sort 时按日期升序（aggregate 出行序=到达序，日期轴必须有序）；显式 sort（如最近 N 天 desc+limit）仍由 aggregate 处理
+    if (!(chart.sort && chart.sort.by) && (!chart.group_by || !chart.group_by.length || chart.group_by[0] === tc)) {
+      const gk = colAccessor(dayChart.group_by[0]).label
+      rowsD = rowsD.slice().sort(function (a, b) { const av = String(a[gk] == null ? '' : a[gk]), bv = String(b[gk] == null ? '' : b[gk]); return av < bv ? -1 : av > bv ? 1 : 0 })
+    }
+    return { type: chart.type, title: chart.title || '', option: buildOption(dayChart, rowsD), rows: rowsD }
   }
   if (chart.granularity === 'month') {
     // 审计 C13：月度聚合按图表 time_column 分组（缺省 order_date），不再硬编码 r.order_date
@@ -898,9 +941,9 @@ function schemaSet(k, v) { if (latestSchema.has(k)) latestSchema.delete(k); late
 let LAST_SCHEMA = null
 const PREVIEW_MAX = 200
 const PREVIEW_TTL_DAYS = 30
-const RENDER_TOOL_DESC = '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。图表类型含 bar/line/area/pie/scatter/heatmap(双维)/radar/funnel/gauge/table/text/kpi；多指标按图型上限（柱/线/面积≤4、表≤6、kpi≤2，2+ 指标自动双 Y 轴）；agg 含 count_distinct 去重计数；支持 join 跨表关联（单对象或链式数组，join.type=left|inner）、group_by/metrics 表达式计算字段（含 hour/minute/datediff/date_add）、相对时间筛选记号（now/today-1/-30d/{relative}）、having 聚合后筛选（{metric, op, value}）；看板级筛选绑定 filtersFrom（缺省=筛选列在图表取数列中才应用，否则跳过不报错）。展示层：metrics.format（千/万缩放/前缀/小数位）、value_map 枚举映射、kpi compare 同环比（prev_day/prev_period）、table rules 条件格式与 showTotals 合计行。'
+const RENDER_TOOL_DESC = '根据 Dashboard Schema 生成可交互看板（取数→聚合→ECharts）。图表类型含 bar/line/area/pie/scatter/heatmap(双维)/radar/funnel/gauge/table/text/kpi；多指标按图型上限（柱/线/面积≤4、表≤6、kpi≤2，2+ 指标自动双 Y 轴）；时间粒度 granularity:"day"（柱/线/面积按 time_column 日分桶，一日一个点）/"month"（按日聚合后合并为月，缺省 order_date）；agg 含 count_distinct 去重计数；支持 join 跨表关联（单对象或链式数组，join.type=left|inner）、group_by/metrics 表达式计算字段（含 hour/minute/datediff/date_add）、相对时间筛选记号（now/today-1/-30d/{relative}，输出形态按列类型自适应：date 列一律 YYYY-MM-DD）、having 聚合后筛选（{metric, op, value}）；看板级筛选绑定 filtersFrom（缺省=筛选列在图表取数列中才应用，否则跳过不报错）。展示层：metrics.format（千/万缩放/前缀/小数位）、value_map 枚举映射、kpi compare 同环比（prev_day/prev_period）、table rules 条件格式与 showTotals 合计行。'
 const BI_CREATE_HEAD = '用户通过 /bi-create 请求生成看板：'
-const BI_CREATE_PROMPT = '\n请按看板生成流程处理：先用 get_meta 核对字段（销售口径需 filters order_status=1，趋势图加时间过滤），再调用 render_dashboard 生成预览，回复末尾用 dsh-ui 围栏 {"kind":"dashboard","id":"<本次 previewId>"} 展示，并询问用户是否保存到「我的看板」。进阶选型（按需优先于回退 PG 视图）：二维密度/交叉分布用 type:"heatmap"（恰好 2 个 group_by 维度=XY 轴 + 1 指标）；一个图同时看多个指标直接写多个 metrics（柱/线/面积 ≤4 个，第 2 条 series 自动挂第二 Y 轴；表格 ≤6 列；去重计数用 agg:"count_distinct"）；需要他表维度（如大类）给图表加 join（单对象 {table:"维表", left_key:"主表列", right_key:"维表关联列"}，或多级链式对象数组，后级可引用前级产出列；可选 type:"left"|"inner"，缺省 left）；占比/客单价等派生指标把 metrics.column 写成表达式（如 "pay_amount / product_qty"，group_by 项同样支持，可用 hour/minute/datediff/date_add 等日期函数），字段与图型能力细节以系统提示中的看板 schema 为准；相对时间筛选把 filters[].value 写成记号（"today"=今天、"-30d"=近30天、BETWEEN ["today-29","today"] 等），看板每次打开自动重算时间窗；按聚合结果过滤（如 销售额>100 的品类）用 {metric:"<指标alias>", op, value} 形式的 filters。展示增强：指标可加 format {unit:"千"|"万", decimals, prefix:"¥"}、图表可加 value_map 枚举映射、kpi 可加 compare {type:"prev_day"|"prev_period"} 同环比（需时间筛选）、table 可加 rules 条件格式与 showTotals:true 合计行；看板级筛选绑定 filtersFrom（缺省=筛选列在图表取数列中才应用，图表用不到的筛选自动跳过）。'
+const BI_CREATE_PROMPT = '\n请按看板生成流程处理：先用 get_meta 核对字段（销售口径需 filters order_status=1，趋势图加时间过滤），再调用 render_dashboard 生成预览，回复末尾用 dsh-ui 围栏 {"kind":"dashboard","id":"<本次 previewId>"} 展示，并询问用户是否保存到「我的看板」。进阶选型（按需优先于回退 PG 视图）：二维密度/交叉分布用 type:"heatmap"（恰好 2 个 group_by 维度=XY 轴 + 1 指标）；日趋势图直接加 granularity:"day"（柱/线/面积按日分桶一日一点，时间列用 time_column 指定，缺省 order_date）、月度汇总加 granularity:"month"；一个图同时看多个指标直接写多个 metrics（柱/线/面积 ≤4 个，第 2 条 series 自动挂第二 Y 轴；表格 ≤6 列；去重计数用 agg:"count_distinct"）；需要他表维度（如大类）给图表加 join（单对象 {table:"维表", left_key:"主表列", right_key:"维表关联列"}，或多级链式对象数组，后级可引用前级产出列；可选 type:"left"|"inner"，缺省 left）；占比/客单价等派生指标把 metrics.column 写成表达式（如 "pay_amount / product_qty"，group_by 项同样支持，可用 hour/minute/datediff/date_add 等日期函数），字段与图型能力细节以系统提示中的看板 schema 为准；相对时间筛选把 filters[].value 写成记号（"today"=今天、"-30d"=近30天、BETWEEN ["today-29","today"] 等；date 列输出一律截断为 YYYY-MM-DD，timestamp 列保留完整时刻，无需按列型挑记号），看板每次打开自动重算时间窗；按聚合结果过滤（如 销售额>100 的品类）用 {metric:"<指标alias>", op, value} 形式的 filters。展示增强：指标可加 format {unit:"千"|"万", decimals, prefix:"¥"}、图表可加 value_map 枚举映射、kpi 可加 compare {type:"prev_day"|"prev_period"} 同环比（需时间筛选）、table 可加 rules 条件格式与 showTotals:true 合计行；看板级筛选绑定 filtersFrom（缺省=筛选列在图表取数列中才应用，图表用不到的筛选自动跳过）。'
 
 export default { inject: ['subprocess', 'systemPrompt', 'webServer', 'fs', 'tools', 'commands'], apply(ctx) {
   // 先确保持久化目录结构存在（fs 服务不保证建父目录，走 subprocess mkdir -p）
