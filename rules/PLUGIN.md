@@ -106,3 +106,11 @@
 - **修复**：快照形态改为**压缩包自更新**——直接 GET 下载仓库 tar.gz（Gitee `repository/archive/master.tar.gz` 主通道匿名可达实测 200，GitHub codeload 备通道），`tar -xzf` 解包后**仅按 package.json `files` 清单 + cordis.patch.yml 逐项覆盖**插件安装目录：只新建/覆盖、绝不删除清单外任何文件（新红线取代旧「只调官方 add」红线；用户数据在包外 PERSIST_DIR 不受影响）；`lib/index.js` 已提交且零外部 bare import，目标机无需装依赖重建。dsh CLI 降级为最后兜底且改经 `sh -lc`（登录 shell 补 nvm PATH），仍失败才报手动提示（文案风格保留）。git 形态补 detached HEAD 优雅报告（拒绝但不 brick）；`updateRepoDir` 先 realpath 再验 `.git`，node_modules 符号链接指向 git 仓库的安装形态正确走 git pull 路径。
 - **验证**：`scripts/verify-updstab-r6.mjs`（8614 端口，mock 压缩包服务器）33/33：S1 符号链接 realpath 探针（node --preserve-symlinks 下 PKG_DIR 本身是符号链接，仅 realpathSync 能识别）；S2 压缩包覆盖端到端 + dsh 全程未被调用 + 清单外/PERSIST_DIR 哨兵文件原样；S3 Gitee 503 → GitHub 备通道；S4/S5/S6 双通道不可达 → `sh -lc` 降级 → 127/非127/成功三分支；S7 detached HEAD 报告且无破坏性 git 命令。R1-R4 harness 全绿 + build/guard/node --check 通过。
 - **教训**：进程内自动更新不要依赖宿主没给的 CLI/PATH——能纯 Node（fetch + tar + fs 覆盖）就纯 Node；「只覆盖清单内路径」比「整目录重装」的安全不变量更容易验证（哨兵文件断言即可机器证明）。
+
+### E12：fence 预览图表被前置 KPI 顶错位——DOM 序不能当数组下标用（2026-09-21）
+
+- **症状**：会话流 dsh-ui 围栏预览中，只要图表前面存在任意 kpi/text/table 单元格，其后所有 ECharts 图表空白；实测 pie/heatmap/line 全空白，而服务端 bi.renderLatest 数据完整（pie 10 项 / heatmap 168 点 / line 13×2 点）、echarts vendor 资源正常、保存视图 React 渲染路径无恙——损失纯在 client 围栏映射层。
+- **根因**：buildCardContent 建格时对 kpi/text/table 不生成 `.bi-chart` div，而 fillCard 回填却用 `.bi-fence-cell .bi-chart` 的 DOM 序位置当 charts[] 下标——有 KPI 前置即整体错位（观测 DOM 0,1,2 对真实 7,8,9），图表 div 拿到 kpi 的 option（无 series），setOption 被空 catch 静默吞掉，全程无一声报错；末位图表还会对到 text 单元格（无 option）直接不初始化。
+- **修复**：创建 `.bi-chart` div 时打 `data-idx = ch._idx`（charts[] 真实下标），回填改为读回该属性，不再依赖 DOM 序；空 catch 改 `console.warn`（保持非致命，后续图表照常初始化）。保存视图路径（data-cid 按 id 映射）不受影响、零改动。
+- **验证**：`scripts/verify-fence-index-r8.mjs`（node:vm + 手写 mini-DOM 跑真实 lib/client.js，端到端走 apply→fence effect→scanPass→fillCard，fetch/echarts 打桩；仓库无 jsdom）：修复前 39/55——S1（KPI 前置）三张图全部喂错 option、S2（kpi+table+text 前置）末位图从未收到 setOption（复现空白），S4 空 catch 无 warn；修复后 56/56 全绿（S3 纯图表、S5 纯 kpi/table/text 两态恒绿）。node --check + npm run build（guard 19 记号）通过；线上副本 `~/.dsh/profiles/web/node_modules/dsh-bi-dashboards/lib/client.js` 与被打补丁基线 434cbbc 逐字节一致（证明补丁修的就是现场那份代码）。
+- **教训**：会「跳过部分元素不产节点」的集合，其 DOM 顺序永远不能反推回数据数组下标——绑定时把稳定身份写进 DOM（data-*），回填时读回；空 catch 的代价是现场故障完全不可见，非致命路径也至少 console.warn 留痕。
