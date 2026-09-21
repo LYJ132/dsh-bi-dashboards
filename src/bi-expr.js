@@ -301,12 +301,14 @@ export function normalizeJoins(join) {
 //   today-1        → 今天平移 N 天（today±N[unit]，缺省 d）
 //   -30d / +7w     → 裸偏移，相对当前时刻（等价 now±Nu）
 // 对象等价形：{relative: "<记号>"}；BETWEEN/IN 数组逐元素解析。
+// 输出形态按筛选列类型定（r7-B，resolveFilters typeOf 参数）：date 列一律 YYYY-MM-DD；
+// timestamp 列保持 now 系完整 datetime / today 系日级 YYYY-MM-DD。
 // 非记号值原样返回（旧静态筛选零改动）；now 快照由调用方每图渲染注入一次（同一图内多筛选共用同一 now，确定性渲染）。
 let nowProvider = function () { return new Date() }
 export function setNowProvider(fn) { nowProvider = typeof fn === 'function' ? fn : function () { return new Date() } }
 export function currentNow() { return nowProvider() }
 const REL_TOKEN = /^(?:(now|today)((?:[+-]\d+(?:d|w|m|y|h|min)?)?)|([+-]\d+)(d|w|m|y|h|min)?)$/
-export function resolveRelToken(token, now) {
+export function resolveRelToken(token, now, dateOnly) {
   const m = REL_TOKEN.exec(String(token).trim().toLowerCase())
   if (!m) return undefined
   const base = m[1] ? m[1] : 'now'
@@ -315,23 +317,42 @@ export function resolveRelToken(token, now) {
   if (off) { const om = /^([+-]\d+)(d|w|m|y|h|min)?$/.exec(off); if (!om) return undefined; n = parseInt(om[1], 10); unit = om[2] || 'd' }
   const start = base === 'today' ? new Date(now.getFullYear(), now.getMonth(), now.getDate()) : new Date(now.getTime())
   const out = shiftDate(start, n, unit)
-  const hasTime = base === 'now' || unit === 'h' || unit === 'min'
+  // dateOnly（date 列）：一律 YYYY-MM-DD；否则保持 R1 规则：now 系或时分偏移 → 完整 datetime，
+  // today 系日级偏移 → YYYY-MM-DD（r7-B：裸偏移在 date 列上曾因走 now 系输出带时刻值而被 400）
+  const hasTime = !dateOnly && (base === 'now' || unit === 'h' || unit === 'min')
   return hasTime ? fmtLocDateTime(out) : fmtLocDate(out)
 }
-// 单个筛选值解析：记号字符串 / {relative} 对象 / 数组（逐元素）；其余原样
-export function resolveFilterValue(v, now) {
-  if (typeof v === 'string') { const r = resolveRelToken(v, now); return r === undefined ? v : r }
-  if (Array.isArray(v)) return v.map(function (x) { return resolveFilterValue(x, now) })
-  if (v && typeof v === 'object' && typeof v.relative === 'string') { const r = resolveRelToken(v.relative, now); return r === undefined ? v : r }
+// 单个筛选值解析：记号字符串 / {relative} 对象 / 数组（逐元素）；其余原样。
+// dateOnly=true（列类型为 date）时，一切记号形态（含裸偏移 -30d/+30d 与 now 系）都截断为
+// YYYY-MM-DD——date 列收到带时刻的字符串会被数据服务 400（date.fromisoformat 不接受，r7-B）。
+export function resolveFilterValue(v, now, dateOnly) {
+  if (typeof v === 'string') { const r = resolveRelToken(v, now, dateOnly); return r === undefined ? v : r }
+  if (Array.isArray(v)) return v.map(function (x) { return resolveFilterValue(x, now, dateOnly) })
+  if (v && typeof v === 'object' && typeof v.relative === 'string') { const r = resolveRelToken(v.relative, now, dateOnly); return r === undefined ? v : r }
   return v
 }
-// 一批筛选解析：非记号值返回原对象（旧定义零改动）；数组值内容相同也会重建数组，但 JSON 序列化逐字节一致
-export function resolveFilters(filters, now) {
+// 一批筛选解析：非记号值返回原对象（旧定义零改动）；数组值内容相同也会重建数组，但 JSON 序列化逐字节一致。
+// typeOf(column) 可选：返回列的 data_type（'date' / 'timestamp ...' / undefined=未知）。
+// date 列 → dateOnly（输出 YYYY-MM-DD）；timestamp 列与未知类型保持既有行为
+// （now 系/裸偏移/时分偏移 → 完整 datetime，today 系日级 → YYYY-MM-DD）。
+export function resolveFilters(filters, now, typeOf) {
   return (filters || []).map(function (f) {
     if (!f || typeof f !== 'object' || Array.isArray(f)) return f
-    const nv = resolveFilterValue(f.value, now)
+    const dateOnly = typeof typeOf === 'function' && String(typeOf(f.column) || '').toLowerCase() === 'date'
+    const nv = resolveFilterValue(f.value, now, dateOnly)
     return nv === f.value ? f : Object.assign({}, f, { value: nv })
   })
+}
+// 值（含数组元素/{relative} 对象）是否含相对时间记号——用于 renderChartDef 判定是否需要查列类型，
+// 静态筛选定义保持零额外 meta 请求（compat 逐字节对拍的前提）。
+export function hasRelTokenValue(v) {
+  if (typeof v === 'string') return REL_TOKEN.test(String(v).trim().toLowerCase())
+  if (Array.isArray(v)) return v.some(hasRelTokenValue)
+  if (v && typeof v === 'object' && typeof v.relative === 'string') return REL_TOKEN.test(String(v.relative).trim().toLowerCase())
+  return false
+}
+export function filtersUseRelTokens(filters) {
+  return (filters || []).some(function (f) { return f && typeof f === 'object' && !Array.isArray(f) && hasRelTokenValue(f.value) })
 }
 
 // JS 侧行过滤器：覆盖 filterItem 全部 op（join 后维表列的筛选无法下沉到单表 /api/query，这里补）

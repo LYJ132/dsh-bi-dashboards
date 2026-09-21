@@ -23,7 +23,7 @@
    ↓
 【取数】get_meta（核对字段与白名单）
    ↓
-【渲染】render_dashboard（schema；月度加 granularity:"month"）
+【渲染】render_dashboard（schema；日粒度加 granularity:"day"，月度加 granularity:"month"）
    ↓
 【预览】回复末尾附 dsh-ui 围栏（previewId），等待用户确认
    ↓
@@ -56,7 +56,7 @@
 
 1. **绘制形式**：看板卡片（持久）还是会话围栏预览（一次性）？
 2. **图表样式（自动推荐）**：
-   - 时间序列 → line
+   - 时间序列 → line；按日趋势柱用 bar、日趋势图在定义里加 `granularity:"day"`（bar/line/area 按 time_column 日分桶、一日一个点，缺省 order_date）
    - 构成/占比 → pie 或堆叠柱
    - 排名对比 → bar
    - 单值指标 → kpi
@@ -74,7 +74,7 @@
    - 从 group_by 维度与既有 filterable 字段提炼候选（Host 只推荐「至少一个图表能消费」的字段；维表 join 列只有被某个图表真正取用时才会进入候选）
    - **看板级筛选绑定（R4 P2-3）**：缺省规则=筛选列出现在图表取数列中（group_by/metrics/filters/time_column）才应用到该图，图表用不到的筛选列自动跳过、不报错（join 维表列不会再打进未 join 的图表）；需要精确控制时图表可加 `filtersFrom:["列",...]` 显式声明接受的看板筛选字段（可少选收窄、也可声明本表有但未取的列放宽），`filtersFrom:[]` 表示该图不接受任何看板筛选
    - **销售类数据必须 filters order_status=1**
-   - 趋势类未指明时间范围时默认近 30 天并主动确认；时间范围**优先写相对时间记号**（看板每次打开自动重算窗口）——`"today"`=今天、`"today-1"`=昨天、`"-30d"`/`"+7w"`/`"-1m"`=相对当前偏移（单位 d/w/m/y/h/min）、BETWEEN 数组逐项解析（如 `["today-29","today"]`）、对象形 `{relative:"-30d"}`；日期列用 today 系（解析为 `YYYY-MM-DD`），时间戳列用 now 系（`"now"`/`"now-2h"`，解析为完整时刻）；同一图表多个记号共用同一 now 快照
+   - 趋势类未指明时间范围时默认近 30 天并主动确认；时间范围**优先写相对时间记号**（看板每次打开自动重算窗口）——`"today"`=今天、`"today-1"`=昨天、`"-30d"`/`"+7w"`/`"-1m"`=相对当前偏移（单位 d/w/m/y/h/min）、BETWEEN 数组逐项解析（如 `["today-29","today"]`）、对象形 `{relative:"-30d"}`；输出形态按筛选列类型自动适配（Host 查表 meta 的 data_type，无需按列型挑记号）：date 列一律 `YYYY-MM-DD`（裸偏移与 `"now"` 系同样截断到日期），timestamp 列 `"now"` 系/时分偏移输出完整时刻、today 系日级输出 `YYYY-MM-DD`；同一图表多个记号共用同一 now 快照
 4. **算法判定**：按上方分类定 L 层级；L2 需确认调度方式与结果新鲜度预期
 
 ---
@@ -83,7 +83,7 @@
 
 ```
 get_meta（核对字段与白名单）
-  → render_dashboard（schema；月度汇总加 granularity:"month"）
+  → render_dashboard（schema；日趋势加 granularity:"day"、月度汇总加 granularity:"month"）
   → 回复末尾附 dsh-ui 围栏（previewId）
   → 用户确认后 save_dashboard（filter_fields 传用户确认的筛选字段）
 ```
@@ -91,7 +91,8 @@ get_meta（核对字段与白名单）
 **关键注意事项**：
 - `render_dashboard` 输出候选筛选字段（各图表 group_by 并集）并在 render 文本中引导模型向用户确认
 - `save_dashboard` 新增 `filter_fields` 参数，每图存 `filterable = 确认字段 ∩ 该图维度`
-- 月度数据必须加 `granularity:"month"`
+- 时间序列图必须显式声明粒度：日趋势（bar/line/area）加 `granularity:"day"`（Host 按 time_column 日分桶、一日一个点，timestamp 列亦归日），月度汇总加 `granularity:"month"`（按日聚合后合并为月）；两者 time_column 缺省 order_date
+- 相对时间记号无需再按列型挑写法：输出形态由 Host 按筛选列类型自动适配（date→`YYYY-MM-DD`、timestamp→完整时刻）
 
 ---
 

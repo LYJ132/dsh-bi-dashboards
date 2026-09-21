@@ -95,3 +95,11 @@
 - **验证**：harness 修复前 39/55（S1 KPI 前置三图全错位喂错 option、S2 kpi+table+text 前置末位图从未收到 setOption 复现现场空白、S4 空 catch 无 warn——三条复现红）→ 修复后 56/56 全绿；S3 纯图表、S5 纯 kpi/table/text 两态恒绿（harness 非空转 + 原行为无回归，kpi/table/text 渲染断言含 th/td/tr/文本节点）；`node --check lib/client.js` 通过；`npm run build`（src bundle，esbuild + capability guard 19 记号）通过、lib/index.js 零变化（worktree 内重建差异仅 bundle 头部 node_modules 相对路径注释，已还原）；线上副本 `~/.dsh/profiles/web/node_modules/dsh-bi-dashboards/lib/client.js` 与补丁基线 434cbbc 全文件逐字节一致（diff 零行）。
 - **契约要点**：DOM 序不得反推数据数组下标——跳元素生成的集合必须在创建时写稳定身份（data-idx）、回填读回；setOption 失败允许非致命继续，但必须 console.warn 留痕（E2「空 catch 吞错」教训在围栏路径的复发，本轮补齐）；保存视图路径（data-cid 按 id）与围栏路径（charts[] 数组下标）是两套映射，只动后者。
 - **提交**：feature/fence-index @ f2bcf05（harness，修复前 39/55 复现红）/ 8ec4280（fix，56/56）/ docs（本次）
+
+### 12.10 bi-capability-v2 r7 —— 现场回归双修：granularity:'day' 日分桶落地 + 相对记号按列型截断（字段报障）
+
+- **目标**：修复 v1.2.0 部署后现场反馈的两处 Host 侧回归——① line/area 图 `granularity:"day"` 整表聚合塌缩为一个点（month 正常）；② `'+30d'`/裸偏移与 now 系记号在纯 date 列输出完整 datetime，数据服务 400 `Invalid value for ... (date) column`。要求修复后用户的 month-顶替/静态上界两种绕法不再必要、存量配置零迁移
+- **根因结论（非 refactor 回归）**：`git log -S "granularity === 'day'"` 全历史零命中 + v1.1.7/master lib 双跑同样塌缩证明 day 分支从未实现（枚举自 26d3d93 即有）；R1 相对记号/R2 多指标的契约普及了「granularity:'day' 不带 group_by」写法才暴露缺口；(B) 是 R1 输出规则把裸偏移归 now 系且无列型感知，「日期列用 today 系」契约把列型选择推给模型侧
+- **产出**：`src/index.js`（renderChartDef day 分支 bar/line/area 日分桶复用 aggregate 全套聚合+having/sort/limit、timestamp 列 slice 归日、kpi/table 不受影响；neededColumns day 兜底 order_date；tableColsCache→tableMeta 同存 names+types；含记号定义 resolveFilters 传 typeOf、meta 缺失降级）；`src/bi-expr.js`（resolveRelToken/resolveFilterValue/resolveFilters dateOnly 参数 + filtersUseRelTokens 探测）；`src/bi-capabilities.js`（relTokenSentence 按列型自动适配口径 + capabilityFacts 新增 rel_output/granularity 两边 + PROSE_HEAD 日粒度句）；RENDER_TOOL_DESC/BI_CREATE_PROMPT 同步；lib/index.js 重建；`scripts/verify-bicap-r7.mjs`（8615 mock 复刻 query.py date 校验）；CHART.md 粒度/记号口径、PLUGIN.md E13
+- **验证**：r7 harness 新 lib 34/34、master lib 22 FAIL（错误文本与现场逐字一致）；r1-r4 feature 18/34/35/27 全绿、r6 33/33、r1-r4+r7 compat 双跑 payload+render cmp 字节相等；npm run build + capability guard 19 记号 + node --check 通过
+- **提交**：feature/bi-capability-v2 @ 415be10（fix）/ 2efe81f（harness）/ 本次 docs 提交
